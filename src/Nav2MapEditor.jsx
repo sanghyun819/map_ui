@@ -91,6 +91,7 @@ const OBJECT_TYPES = [
 ];
 const CATALOG_COLORS=["#4fc3f7","#ffb74d","#ce93d8","#81c784","#90caf9","#f48fb1","#fff176","#80deea","#bcaaa4","#a5d6a7"];
 const DEFAULT_SEMANTIC_CATALOG={rooms:["kitchen","living room","bedroom","laundry room"],locations:[],objectClasses:[]};
+let _catalogSourceIdx=0;
 
 function catalogId(name){
   return String(name||"").toLowerCase().replace(/\(p\)/gi,"").replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"")||"custom";
@@ -193,6 +194,27 @@ function mergeSemanticCatalog(current,next){
     classMap.set(key,{...cls,objects:[...objMap.values()]});
   });
   return{rooms:[...roomSet],locations:[...locMap.values()],objectClasses:[...classMap.values()]};
+}
+function catalogSourceId(){
+  return `md${Date.now().toString(36)}_${++_catalogSourceIdx}`;
+}
+function defaultSemanticCatalog(){
+  return {
+    rooms:[...DEFAULT_SEMANTIC_CATALOG.rooms],
+    locations:[],
+    objectClasses:[],
+  };
+}
+function catalogCounts(catalog){
+  return {
+    rooms:catalog?.rooms?.length||0,
+    locations:catalog?.locations?.length||0,
+    classes:catalog?.objectClasses?.length||0,
+    objects:(catalog?.objectClasses||[]).reduce((n,c)=>n+(c.objects?.length||0),0),
+  };
+}
+function composeSemanticCatalog(sources){
+  return (sources||[]).reduce((acc,src)=>mergeSemanticCatalog(acc,src.catalog||defaultSemanticCatalog()),defaultSemanticCatalog());
 }
 
 // ─── Geometry helpers ──────────────────────────────────────────────────────────
@@ -526,6 +548,132 @@ function GoalDialog({rooms,carriers,objects,roomId,goalId,typeOptions,onConfirm,
             🎯 추가
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Markdown catalog management panel ───────────────────────────────────────
+function CatalogPanel({catalog,sources,isElectron,onImport,onFileImport,onRemoveSource,onReset,onAddRoom}) {
+  const [view,setView]=useState("sources");
+  const [roomName,setRoomName]=useState("");
+  const counts=catalogCounts(catalog);
+  const addRoom=()=>{
+    const name=roomName.trim();
+    if(!name)return;
+    onAddRoom(name);
+    setRoomName("");
+    setView("rooms");
+  };
+
+  return(
+    <div style={{width:310,background:"#071121",borderLeft:"1px solid rgba(0,212,255,0.12)",display:"flex",flexDirection:"column",flexShrink:0}}>
+      <div style={{padding:"9px 14px",borderBottom:"1px solid rgba(0,212,255,0.12)",color:"#00d4ff",fontWeight:"bold",letterSpacing:1,fontSize:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <span>📋 MD 목록</span>
+        <span style={{opacity:.45,fontSize:10}}>{counts.rooms}R·{counts.locations}L·{counts.objects}O</span>
+      </div>
+      <div style={{padding:10,borderBottom:"1px solid rgba(0,212,255,0.08)",display:"flex",gap:5,flexWrap:"wrap"}}>
+        {isElectron ? (
+          <button style={{...btn(true),fontSize:11,padding:"4px 8px"}} onClick={onImport}>＋ MD</button>
+        ) : (
+          <label style={{...btn(true),fontSize:11,padding:"4px 8px",cursor:"pointer"}}>＋ MD<input type="file" accept=".md" multiple onChange={onFileImport} style={{display:"none"}}/></label>
+        )}
+        <button style={{...btn(false,true),fontSize:11,padding:"4px 8px",opacity:sources.length?1:.45}} onClick={onReset} disabled={!sources.length}>초기화</button>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:3,padding:"8px 10px",borderBottom:"1px solid rgba(0,212,255,0.07)"}}>
+        {[["sources","소스",sources.length],["rooms","Rooms",counts.rooms],["locations","Locations",counts.locations],["objects","Objects",counts.objects]].map(([id,label,count])=>(
+          <button key={id} onClick={()=>setView(id)} style={{...btn(view===id),justifyContent:"center",padding:"4px 2px",fontSize:10,gap:3}}>
+            <span>{label}</span><span style={{opacity:.55}}>{count}</span>
+          </button>
+        ))}
+      </div>
+      <div style={{flex:1,overflow:"auto",padding:10}}>
+        {view==="sources"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {sources.length===0&&(
+              <div style={{color:"rgba(0,212,255,0.24)",textAlign:"center",padding:"20px 8px",lineHeight:1.9,fontSize:11}}>
+                기본 Rooms 사용 중<br/>
+                <span style={{fontSize:10,opacity:.7}}>kitchen · living room · bedroom · laundry room</span>
+              </div>
+            )}
+            {sources.map(src=>{
+              const c=src.counts||catalogCounts(src.catalog);
+              return(
+                <div key={src.id} style={{padding:"7px 9px",borderRadius:6,background:"rgba(255,255,255,0.025)",border:"1px solid rgba(0,212,255,0.08)"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <span style={{fontSize:13}}>{src.kind==="manual"?"＋":"📄"}</span>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div title={src.path||src.name} style={{color:"#c9fffe",fontSize:11,fontWeight:"bold",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{src.name}</div>
+                      <div style={{color:"rgba(0,212,255,0.35)",fontSize:9}}>{c.rooms} rooms · {c.locations} locations · {c.objects} objects</div>
+                    </div>
+                    <button style={{...btn(false,true),padding:"1px 4px",fontSize:9}} onClick={()=>onRemoveSource(src.id)}>✕</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {view==="rooms"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            <div style={{display:"flex",gap:5}}>
+              <input value={roomName} onChange={e=>setRoomName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addRoom();}} placeholder="room name"
+                style={{...INPUT,flex:1,minWidth:0,padding:"4px 7px",fontSize:11}}/>
+              <button style={{...btn(true),fontSize:11,padding:"4px 8px"}} onClick={addRoom}>추가</button>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:4}}>
+              {(catalog.rooms||[]).map((room,i)=>(
+                <div key={`${room}-${i}`} style={{display:"flex",alignItems:"center",gap:7,padding:"5px 8px",borderRadius:5,background:"rgba(255,255,255,0.025)",border:"1px solid rgba(0,212,255,0.06)"}}>
+                  <span style={{width:10,height:10,borderRadius:2,background:CATALOG_COLORS[i%CATALOG_COLORS.length],opacity:.85}}/>
+                  <span style={{color:"#c9fffe",fontSize:11,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{room}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {view==="locations"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:5}}>
+            {(catalog.locations||[]).length===0&&(
+              <div style={{color:"rgba(0,212,255,0.24)",textAlign:"center",padding:"22px 8px",fontSize:11}}>Locations 없음</div>
+            )}
+            {(catalog.locations||[]).map((loc,i)=>(
+              <div key={`${loc.number||i}-${loc.label}`} style={{padding:"6px 8px",borderRadius:5,background:"rgba(255,255,255,0.025)",border:"1px solid rgba(0,212,255,0.06)"}}>
+                <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                  <span style={{color:"rgba(0,212,255,0.45)",fontSize:10,width:22}}>{loc.number||"-"}</span>
+                  <span style={{color:"#c9fffe",fontSize:11,fontWeight:"bold",flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{loc.label}</span>
+                  {loc.placeable&&<span style={{color:"#00e676",fontSize:9}}>(p)</span>}
+                </div>
+                {loc.objectCategory&&<div style={{color:"rgba(0,212,255,0.35)",fontSize:9,marginTop:2,paddingLeft:28}}>{loc.objectCategory}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {view==="objects"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:7}}>
+            {(catalog.objectClasses||[]).length===0&&(
+              <div style={{color:"rgba(0,212,255,0.24)",textAlign:"center",padding:"22px 8px",fontSize:11}}>Objects 없음</div>
+            )}
+            {(catalog.objectClasses||[]).map((cls,i)=>(
+              <div key={`${cls.label}-${i}`} style={{padding:"7px 8px",borderRadius:6,background:"rgba(255,255,255,0.025)",border:"1px solid rgba(0,212,255,0.07)"}}>
+                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:5}}>
+                  <span style={{width:10,height:10,borderRadius:2,background:CATALOG_COLORS[i%CATALOG_COLORS.length],opacity:.85}}/>
+                  <span style={{color:"#c9fffe",fontSize:11,fontWeight:"bold"}}>{cls.label}</span>
+                  <span style={{color:"rgba(0,212,255,0.35)",fontSize:9}}>({cls.type})</span>
+                  <span style={{marginLeft:"auto",color:"rgba(0,212,255,0.35)",fontSize:9}}>{cls.objects?.length||0}</span>
+                </div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                  {(cls.objects||[]).map(obj=>(
+                    <span key={obj.name} title={obj.image||obj.name} style={{padding:"2px 5px",borderRadius:4,background:"rgba(0,212,255,0.06)",border:"1px solid rgba(0,212,255,0.08)",color:"rgba(201,255,254,0.82)",fontSize:9}}>
+                      {obj.name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -969,8 +1117,10 @@ export default function Nav2MapEditor() {
   const [semDlg,      setSemDlg]      = useState(null);
   const [goalDlg,     setGoalDlg]     = useState(null); // {x, y, roomId}
   const [showSemPanel,setShowSemPanel]= useState(false);
+  const [showCatalogPanel,setShowCatalogPanel]= useState(false);
   const [semOpacity,  setSemOpacity]  = useState(0.8);
-  const [semanticCatalog,setSemanticCatalog]=useState(DEFAULT_SEMANTIC_CATALOG);
+  const [catalogSources,setCatalogSources]=useState([]);
+  const semanticCatalog=useMemo(()=>composeSemanticCatalog(catalogSources),[catalogSources]);
   const typeOptions=useMemo(()=>({
     maps:MAP_TYPES,
     rooms:buildRoomTypes(semanticCatalog),
@@ -2108,14 +2258,61 @@ export default function Nav2MapEditor() {
   };
 
   const importCatalogTexts=useCallback((items)=>{
-    const parsed=items.map(it=>parseSemanticMarkdown(it.text));
-    const merged=parsed.reduce((acc,cur)=>mergeSemanticCatalog(acc,cur),semanticCatalog);
-    setSemanticCatalog(merged);
-    const locCount=merged.locations.length;
-    const objCount=merged.objectClasses.reduce((n,c)=>n+(c.objects?.length||0),0);
-    setStatus(`✅ MD 카탈로그 로드: 방 ${merged.rooms.length} · 위치 ${locCount} · 객체 ${objCount}`);
+    const incoming=items.map(it=>{
+      const catalog=parseSemanticMarkdown(it.text);
+      return {
+        id:catalogSourceId(),
+        kind:"md",
+        name:it.name||"catalog.md",
+        path:it.path||"",
+        catalog,
+        counts:catalogCounts(catalog),
+      };
+    });
+    if(incoming.length===0)return;
+    setCatalogSources(prev=>{
+      const incomingKeys=new Set(incoming.map(src=>src.path||src.name));
+      const next=[...prev.filter(src=>!incomingKeys.has(src.path||src.name)),...incoming];
+      const merged=composeSemanticCatalog(next);
+      const counts=catalogCounts(merged);
+      setStatus(`✅ MD 목록 갱신: 파일 ${incoming.length} · 방 ${counts.rooms} · 위치 ${counts.locations} · 객체 ${counts.objects}`);
+      return next;
+    });
+    setShowCatalogPanel(true);
     setActiveTab("semantic");
-  },[semanticCatalog]);
+  },[]);
+
+  const removeCatalogSource=useCallback((id)=>{
+    setCatalogSources(prev=>{
+      const next=prev.filter(src=>src.id!==id);
+      const counts=catalogCounts(composeSemanticCatalog(next));
+      setStatus(`📋 MD 목록 갱신: 방 ${counts.rooms} · 위치 ${counts.locations} · 객체 ${counts.objects}`);
+      return next;
+    });
+  },[]);
+
+  const resetCatalogSources=useCallback(()=>{
+    setCatalogSources([]);
+    const counts=catalogCounts(defaultSemanticCatalog());
+    setStatus(`📋 MD 목록 초기화: 방 ${counts.rooms} · 위치 ${counts.locations} · 객체 ${counts.objects}`);
+  },[]);
+
+  const addCatalogRoom=useCallback((name)=>{
+    const room=String(name||"").trim();
+    if(!room)return;
+    setCatalogSources(prev=>{
+      const current=composeSemanticCatalog(prev);
+      if((current.rooms||[]).some(r=>catalogId(r)===catalogId(room))){
+        setStatus(`⚠ 이미 있는 Room: ${room}`);
+        return prev;
+      }
+      const catalog={rooms:[room],locations:[],objectClasses:[]};
+      const next=[...prev,{id:catalogSourceId(),kind:"manual",name:`room: ${room}`,path:"",catalog,counts:catalogCounts(catalog)}];
+      const counts=catalogCounts(composeSemanticCatalog(next));
+      setStatus(`✅ Room 추가: ${room} · 방 ${counts.rooms}`);
+      return next;
+    });
+  },[]);
 
   const handleCatalogOpen=useCallback(async()=>{
     if(!isElectron||!window.electronAPI?.openFileDialog){setStatus("⚠ MD 카탈로그 열기는 Electron 앱에서만 가능합니다");return;}
@@ -2128,7 +2325,7 @@ export default function Nav2MapEditor() {
     const items=[];
     for(const p of paths){
       const text=await window.electronAPI.readFile(p,"utf-8");
-      items.push({name:p.split("/").pop(),text});
+      items.push({name:p.split("/").pop(),path:p,text});
     }
     importCatalogTexts(items);
   },[importCatalogTexts]);
@@ -2572,11 +2769,7 @@ export default function Nav2MapEditor() {
           ) : (
             <label style={{...btn(),cursor:"pointer"}}>📥 시맨틱<input type="file" accept=".json" onChange={handleSemanticFile} style={{display:"none"}}/></label>
           )}
-          {isElectron ? (
-            <button style={btn()} onClick={handleCatalogOpen}>📋 MD목록</button>
-          ) : (
-            <label style={{...btn(),cursor:"pointer"}}>📋 MD목록<input type="file" accept=".md" multiple onChange={handleCatalogFiles} style={{display:"none"}}/></label>
-          )}
+          <button style={btn(showCatalogPanel)} onClick={()=>setShowCatalogPanel(v=>!v)}>📋 MD목록 ({catalogCounts(semanticCatalog).rooms}/{catalogCounts(semanticCatalog).locations}/{catalogCounts(semanticCatalog).objects})</button>
           <button style={btn(showRos2Panel)} onClick={()=>setShowRos2Panel(v=>!v)}>🤖 ROS2{ros2State===ROS2_STATES.CONNECTED&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
           <button style={btn(show3DView)} onClick={()=>setShow3DView(v=>!v)}>🧊 3D</button>
           {show3DView&&(
@@ -2835,7 +3028,20 @@ export default function Nav2MapEditor() {
           )}
         </div>
 
-        {/* ── SEMANTIC PANEL (rooms + carriers + objects + waypoints) ── */}
+        {/* ── MD CATALOG PANEL ── */}
+        {showCatalogPanel&&(
+          <CatalogPanel
+            catalog={semanticCatalog}
+            sources={catalogSources}
+            isElectron={isElectron}
+            onImport={handleCatalogOpen}
+            onFileImport={handleCatalogFiles}
+            onRemoveSource={removeCatalogSource}
+            onReset={resetCatalogSources}
+            onAddRoom={addCatalogRoom}
+          />
+        )}
+
         {/* ── ROS2 PANEL ── */}
         {showRos2Panel&&(
           <Ros2Panel bridge={ros2Bridge} onVisChange={setRos2Vis}
