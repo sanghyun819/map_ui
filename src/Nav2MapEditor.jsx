@@ -60,34 +60,34 @@ const ROOM_TYPES = [
   { id:"living_room",  label:"living room",  icon:"▣", color:"#7b68ee", alpha:0.18 },
   { id:"bedroom",      label:"bedroom",      icon:"▣", color:"#4a90d9", alpha:0.18 },
   { id:"laundry_room", label:"laundry room", icon:"▣", color:"#20b2aa", alpha:0.18 },
-  { id:"custom",      label:"커스텀",   icon:"◈",   color:"#aaaaaa", alpha:0.15 },
+  { id:"custom",      label:"custom",   icon:"◈",   color:"#aaaaaa", alpha:0.15 },
 ];
 const CARRIER_TYPES = [
-  { id:"desk",      label:"책상",       icon:"🖥",  color:"#4fc3f7", alpha:0.15 },
-  { id:"table",     label:"테이블",     icon:"📋",  color:"#fff176", alpha:0.15 },
-  { id:"shelf",     label:"선반/책장",  icon:"📚",  color:"#ce93d8", alpha:0.15 },
-  { id:"cabinet",   label:"캐비넷",     icon:"🗄",  color:"#bcaaa4", alpha:0.15 },
-  { id:"counter",   label:"카운터",     icon:"▬",   color:"#ffb74d", alpha:0.15 },
-  { id:"sofa",      label:"소파",       icon:"🛋",  color:"#a5d6a7", alpha:0.15 },
-  { id:"bed",       label:"침대",       icon:"🛏",  color:"#f48fb1", alpha:0.15 },
-  { id:"chair",     label:"의자",       icon:"🪑",  color:"#81c784", alpha:0.15 },
-  { id:"rack",      label:"랙",         icon:"🔲",  color:"#90caf9", alpha:0.15 },
-  { id:"custom",    label:"커스텀",     icon:"◎",   color:"#cccccc", alpha:0.15 },
+  { id:"desk",      label:"desk",      icon:"🖥",  color:"#4fc3f7", alpha:0.15 },
+  { id:"table",     label:"table",     icon:"📋",  color:"#fff176", alpha:0.15 },
+  { id:"shelf",     label:"shelf",     icon:"📚",  color:"#ce93d8", alpha:0.15 },
+  { id:"cabinet",   label:"cabinet",   icon:"🗄",  color:"#bcaaa4", alpha:0.15 },
+  { id:"counter",   label:"counter",   icon:"▬",   color:"#ffb74d", alpha:0.15 },
+  { id:"sofa",      label:"sofa",      icon:"🛋",  color:"#a5d6a7", alpha:0.15 },
+  { id:"bed",       label:"bed",       icon:"🛏",  color:"#f48fb1", alpha:0.15 },
+  { id:"chair",     label:"chair",     icon:"🪑",  color:"#81c784", alpha:0.15 },
+  { id:"rack",      label:"rack",      icon:"🔲",  color:"#90caf9", alpha:0.15 },
+  { id:"custom",    label:"custom",    icon:"◎",   color:"#cccccc", alpha:0.15 },
 ];
 const OBJECT_TYPES = [
-  { id:"monitor",   label:"모니터/TV",    icon:"📺",  color:"#90caf9", point:false },
-  { id:"charger",   label:"충전스테이션", icon:"⚡",  color:"#ffee58", point:true  },
-  { id:"plant",     label:"식물",         icon:"🌱",  color:"#69f0ae", point:true  },
-  { id:"food",      label:"음식",         icon:"🍎",  color:"#ff8a65", point:true  },
-  { id:"drink",     label:"음료",         icon:"🥤",  color:"#4dd0e1", point:true  },
-  { id:"book",      label:"책/서류",      icon:"📖",  color:"#ce93d8", point:true  },
-  { id:"laptop",    label:"노트북",       icon:"💻",  color:"#90caf9", point:true  },
-  { id:"tool",      label:"도구",         icon:"🔧",  color:"#b0bec5", point:true  },
-  { id:"box",       label:"상자",         icon:"📦",  color:"#bcaaa4", point:false },
-  { id:"door",      label:"문",           icon:"🚪",  color:"#ffb74d", point:false },
-  { id:"window",    label:"창문",         icon:"🪟",  color:"#80deea", point:false },
-  { id:"obstacle",  label:"장애물(기타)", icon:"⬛",  color:"#ff5252", point:false },
-  { id:"custom",    label:"커스텀",       icon:"◎",   color:"#eeeeee", point:true  },
+  { id:"monitor",   label:"monitor",  icon:"📺",  color:"#90caf9", point:false },
+  { id:"charger",   label:"charger",  icon:"⚡",  color:"#ffee58", point:true  },
+  { id:"plant",     label:"plant",    icon:"🌱",  color:"#69f0ae", point:true  },
+  { id:"food",      label:"food",     icon:"🍎",  color:"#ff8a65", point:true  },
+  { id:"drink",     label:"drink",    icon:"🥤",  color:"#4dd0e1", point:true  },
+  { id:"book",      label:"book",     icon:"📖",  color:"#ce93d8", point:true  },
+  { id:"laptop",    label:"laptop",   icon:"💻",  color:"#90caf9", point:true  },
+  { id:"tool",      label:"tool",     icon:"🔧",  color:"#b0bec5", point:true  },
+  { id:"box",       label:"box",      icon:"📦",  color:"#bcaaa4", point:false },
+  { id:"door",      label:"door",     icon:"🚪",  color:"#ffb74d", point:false },
+  { id:"window",    label:"window",   icon:"🪟",  color:"#80deea", point:false },
+  { id:"obstacle",  label:"obstacle", icon:"⬛",  color:"#ff5252", point:false },
+  { id:"custom",    label:"custom",   icon:"◎",   color:"#eeeeee", point:true  },
 ];
 const CATALOG_COLORS=["#4fc3f7","#ffb74d","#ce93d8","#81c784","#90caf9","#f48fb1","#fff176","#80deea","#bcaaa4","#a5d6a7"];
 const DEFAULT_SEMANTIC_CATALOG={rooms:["kitchen","living room","bedroom","laundry room"],locations:[],objectClasses:[]};
@@ -476,7 +476,7 @@ function GoalDialog({rooms,carriers,objects,roomId,goalId,typeOptions,onConfirm,
   const [label,setLabel]=useState("");
   const room=rooms.find(r=>r.id===roomId);
   const selectedTarget=allTargets.find(t=>t.id===targetId);
-  const defaultLabel=label||(selectedTarget?`${selectedTarget.label} 앞`:(goalId||"시맨틱 골"));
+  const defaultLabel=label||(selectedTarget?`${selectedTarget.label} approach`:(goalId||"semantic goal"));
   return(
     <div style={MODAL}>
       <div style={{...MBOX,minWidth:380}}>
@@ -515,7 +515,7 @@ function GoalDialog({rooms,carriers,objects,roomId,goalId,typeOptions,onConfirm,
         </div>
         <div style={{marginBottom:18}}>
           <div style={{fontSize:10,color:"rgba(0,212,255,0.5)",marginBottom:6,letterSpacing:1}}>골 라벨</div>
-          <input autoFocus placeholder="예: 책상 앞" value={label} onChange={e=>setLabel(e.target.value)}
+          <input autoFocus placeholder="e.g. desk approach" value={label} onChange={e=>setLabel(e.target.value)}
             onKeyDown={e=>e.key==="Enter"&&onConfirm(targetId,defaultLabel)}
             style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:13}}/>
         </div>
@@ -648,20 +648,30 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,se
             <span style={{fontSize:13}}>{ct.icon}</span>
             <div style={{flex:1,minWidth:0}}>
               <div style={{color:ct.color,fontSize:11,fontWeight:"bold",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{carrier.label}</div>
-              <div style={{color:"rgba(0,212,255,0.35)",fontSize:9}}>{ct.label} · {isPoly?`${carrier.poly.length}꼭짓점`:`${(carrier.w*res).toFixed(1)}×${(carrier.h*res).toFixed(1)}m`}</div>
+              <div style={{color:"rgba(0,212,255,0.35)",fontSize:9}}>{ct.label} · {isPoly?`${carrier.poly.length}꼭짓점`:`${(carrier.w*res).toFixed(1)}×${(carrier.h*res).toFixed(1)}m`} · z {(Number(carrier.z)||0).toFixed(2)}m</div>
             </div>
             {nested.length>0&&<span style={{fontSize:9,color:"rgba(0,212,255,0.25)"}}>{isExp?"▲":"▼"}</span>}
             <button onClick={e=>{e.stopPropagation();onDeleteCarrier(carrier.id);}} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
           </div>
           {nested.length>0&&<div style={{fontSize:9,color:"rgba(0,212,255,0.3)",marginTop:2}}>└ {nested.length}개 객체</div>}
-          {isSel&&rooms.length>0&&(
-            <div style={{marginTop:5,display:"flex",alignItems:"center",gap:4}} onClick={e=>e.stopPropagation()}>
-              <span style={{fontSize:9,color:"rgba(0,212,255,0.4)"}}>소속방</span>
-              <select value={carrier.roomId||""} onChange={e=>onReassign("carrier",carrier.id,"roomId",e.target.value||null)}
-                style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}>
-                <option value="">없음</option>
-                {rooms.map(r=><option key={r.id} value={r.id}>{r.label}</option>)}
-              </select>
+          {isSel&&(
+            <div style={{marginTop:5,display:"flex",flexDirection:"column",gap:4}} onClick={e=>e.stopPropagation()}>
+              {rooms.length>0&&(
+                <div style={{display:"flex",alignItems:"center",gap:4}}>
+                  <span style={{fontSize:9,color:"rgba(0,212,255,0.4)"}}>소속방</span>
+                  <select value={carrier.roomId||""} onChange={e=>onReassign("carrier",carrier.id,"roomId",e.target.value||null)}
+                    style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}>
+                    <option value="">없음</option>
+                    {rooms.map(r=><option key={r.id} value={r.id}>{r.label}</option>)}
+                  </select>
+                </div>
+              )}
+              <div style={{display:"flex",alignItems:"center",gap:4}}>
+                <span style={{fontSize:9,color:"rgba(0,212,255,0.4)",whiteSpace:"nowrap"}}>z(m)</span>
+                <input type="number" step="0.01" value={Number(carrier.z)||0}
+                  onChange={e=>onReassign("carrier",carrier.id,"z",parseFloat(e.target.value)||0)}
+                  style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}/>
+              </div>
             </div>
           )}
         </div>
@@ -781,7 +791,7 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,se
             <div style={{display:"flex",alignItems:"center",gap:5}}>
               <span style={{fontSize:12,color:"#00e676"}}>⌂</span>
               <div style={{flex:1,minWidth:0}}>
-                <div style={{color:"#00e676",fontWeight:"bold",fontSize:11}}>Nav2 시작점</div>
+                <div style={{color:"#00e676",fontWeight:"bold",fontSize:11}}>Nav2 start pose</div>
                 <div style={{color:"rgba(0,230,118,0.48)",fontSize:9}}>
                   {(()=>{const w=toWorld(startPose.x,startPose.y);return `(${w.x}, ${w.y})m`;})()} · {Math.round(startPose.theta*180/Math.PI)}°
                 </div>
@@ -1506,7 +1516,7 @@ export default function Nav2MapEditor() {
     // ── Nav2 start pose ──
     if(tool==="startPose"){
       if(inBounds(pt)){
-        const newStart={id:START_POSE_ID,x:pt.x,y:pt.y,theta:0,label:"Nav2 시작점"};
+        const newStart={id:START_POSE_ID,x:pt.x,y:pt.y,theta:0,label:"Nav2 start pose"};
         startDragRef.current={id:START_POSE_ID};
         isDrawing.current=true; shapeStart.current=pt;
         setStartPose(newStart);
@@ -1742,8 +1752,8 @@ export default function Nav2MapEditor() {
     } else if(mode==="carrier"){
       const ct=typeOptions.carriers.find(t=>t.id===type)||typeOptions.carriers[typeOptions.carriers.length-1];
       const newCarrier=poly
-        ?{id:cuid(),type,label,color:ct.color,poly}
-        :{id:cuid(),type,label,color:ct.color,...rect};
+        ?{id:cuid(),type,label,color:ct.color,z:0,poly}
+        :{id:cuid(),type,label,color:ct.color,z:0,...rect};
       if(ct.catalog){
         newCarrier.placeable=!!ct.catalog.placeable;
         newCarrier.objectCategory=ct.catalog.objectCategory||null;
@@ -2011,7 +2021,7 @@ export default function Nav2MapEditor() {
         .map((r,i)=>importArea(r,i,typeOptions.rooms,"r","custom",{mapId:r?.mapId||r?.map_id||null}))
         .filter(Boolean);
       const nextCarriers=(Array.isArray(data.carriers)?data.carriers:[])
-        .map((c,i)=>importArea(c,i,typeOptions.carriers,"c","custom",{roomId:c?.roomId||c?.room_id||null,placeable:c?.placeable??null,objectCategory:c?.objectCategory||c?.object_category||null,locationNumber:c?.locationNumber||c?.location_number||null}))
+        .map((c,i)=>importArea(c,i,typeOptions.carriers,"c","custom",{roomId:c?.roomId||c?.room_id||null,z:finiteNumber(c?.z??c?.z_m??c?.height,0),placeable:c?.placeable??null,objectCategory:c?.objectCategory||c?.object_category||null,locationNumber:c?.locationNumber||c?.location_number||null}))
         .filter(Boolean);
       const nextObjects=(Array.isArray(data.objects)?data.objects:[])
         .map((o,i)=>{
@@ -2026,7 +2036,7 @@ export default function Nav2MapEditor() {
         .filter(Boolean);
       const startRaw=data.start_pose||data.startPose||data.initial_pose||data.initialPose;
       const startPoint=getPosePoint(startRaw);
-      const nextStart=startRaw&&startPoint?{id:START_POSE_ID,label:startRaw.label||"Nav2 시작점",x:startPoint.x,y:startPoint.y,theta:thetaFromSemanticPose(startRaw)}:null;
+      const nextStart=startRaw&&startPoint?{id:START_POSE_ID,label:startRaw.label||"Nav2 start pose",x:startPoint.x,y:startPoint.y,theta:thetaFromSemanticPose(startRaw)}:null;
       const nextWaypoints=(Array.isArray(data.waypoints)?data.waypoints:[])
         .map((wp,i)=>{
           const p=getPosePoint(wp);
@@ -2264,7 +2274,7 @@ export default function Nav2MapEditor() {
     const pose=robotPoseToCanvas();
     if(!pose)return;
     if(kind==="start"){
-      setStartPose({id:START_POSE_ID,label:"Nav2 시작점",...pose});
+      setStartPose({id:START_POSE_ID,label:"Nav2 start pose",...pose});
       setSelSemId(START_POSE_ID);setSelWpIdx(null);
       setStatus("⌂ 현재 로봇 pose를 Nav2 시작점으로 지정");
     }else if(kind==="waypoint"){
@@ -2417,7 +2427,7 @@ export default function Nav2MapEditor() {
     const poseJson=(pose)=>{
       const pos=tw(pose.x,pose.y);
       const qz=Math.sin(pose.theta/2),qw=Math.cos(pose.theta/2);
-      return{label:pose.label||"Nav2 시작점",
+      return{label:pose.label||"Nav2 start pose",
         position:{x:+pos.x,y:+pos.y,z:0.0},
         orientation:{x:0,y:0,z:+qz.toFixed(5),w:+qw.toFixed(5)},
         theta_rad:+pose.theta.toFixed(4),
@@ -2443,7 +2453,9 @@ export default function Nav2MapEditor() {
       carriers:carriers.map(c=>{
         const poly=shapeToPoly(c)||[];
         const bb=poly.length?polyBBox(poly):{x:c.x,y:c.y,x2:c.x+(c.w||0),y2:c.y+(c.h||0)};
+        const z=+(Number(c.z)||0).toFixed(3);
         return{id:c.id,type:c.type,label:c.label,room_id:c.roomId||null,
+          z,
           placeable:c.placeable??null,object_category:c.objectCategory||null,location_number:c.locationNumber||null,
           polygon:polyWorld(poly),bbox:bboxWorld(bb),
           _pixel:{polygon:poly}};

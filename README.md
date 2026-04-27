@@ -143,6 +143,7 @@ The editor parses these sections automatically:
 `(p)` means objects can be placed at that location.
 Imported locations become carrier/location choices in the semantic dialog.
 The object category column is saved to semantic JSON as `object_category`.
+Each carrier also has an editable `z` value in meters, which is exported to semantic JSON.
 
 Known-object files are parsed from sections like this:
 
@@ -308,7 +309,7 @@ The semantic JSON includes:
 - `start_pose`
 - `maps`
 - `rooms`
-- `carriers`
+- `carriers` with editable `z`
 - `objects`
 - `waypoints`
 - `goals`
@@ -330,7 +331,15 @@ Example:
     "_pixel": { "x": 200, "y": 200 }
   },
   "rooms": [],
-  "carriers": [],
+  "carriers": [
+    {
+      "id": "c1",
+      "type": "kitchen_counter",
+      "label": "kitchen counter",
+      "z": 0.85,
+      "object_category": "dishes"
+    }
+  ],
   "objects": [],
   "waypoints": [],
   "goals": []
