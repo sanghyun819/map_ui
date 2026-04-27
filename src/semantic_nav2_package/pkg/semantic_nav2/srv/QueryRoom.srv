@@ -1,0 +1,4 @@
+geometry_msgs/Point point   # world x,y
+---
+bool found
+semantic_nav2/SemanticRoom room

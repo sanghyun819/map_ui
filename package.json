@@ -1,0 +1,42 @@
+{
+  "name": "map_ui",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
+    "electron:build": "vite build && electron-builder",
+    "electron:preview": "vite build && electron ."
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "vite": "^8.0.0",
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0",
+    "concurrently": "^9.0.0",
+    "wait-on": "^8.0.0",
+    "cross-env": "^7.0.3"
+  },
+  "build": {
+    "appId": "com.nav2.map-editor",
+    "productName": "Nav2 Map Editor",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Utility"
+    }
+  }
+}

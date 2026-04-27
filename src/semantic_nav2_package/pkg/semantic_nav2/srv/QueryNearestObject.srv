@@ -1,0 +1,7 @@
+geometry_msgs/Point point   # robot world position
+string object_type          # empty = any type
+float32 max_radius_m        # 0 = unlimited
+---
+bool found
+semantic_nav2/SemanticObject object
+float32 distance_m

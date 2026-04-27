@@ -1,0 +1,4 @@
+string room_id      # empty = all rooms
+string object_type  # empty = all types  e.g. "desk", "chair"
+---
+semantic_nav2/SemanticObject[] objects
