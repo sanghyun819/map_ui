@@ -2,6 +2,11 @@
   "name": "map_ui",
   "private": true,
   "version": "1.0.0",
+  "description": "Nav2 map and semantic navigation editor for ROS2",
+  "author": {
+    "name": "sanghyun819",
+    "email": "sh000819@gmail.com"
+  },
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -34,6 +39,7 @@
       "dist/**/*",
       "electron/**/*"
     ],
+    "beforeBuild": "scripts/electron-before-build.cjs",
     "linux": {
       "target": ["AppImage", "deb"],
       "category": "Utility"
