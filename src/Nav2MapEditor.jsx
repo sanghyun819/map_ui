@@ -692,22 +692,39 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,se
     if(childPoly.length===0)return false;
     return polyMostlyInside(poly,childPoly,0.8);
   };
+  const roomBelongsToMap=(room,map)=>{
+    if(room.mapId)return room.mapId===map.id;
+    const mp=shapeToPoly(map)||[];
+    return mp.length>0&&insidePoly(mp,room);
+  };
+  const carrierBelongsToRoom=(carrier,room)=>{
+    if(carrier.roomId)return carrier.roomId===room.id;
+    const rp=shapeToPoly(room)||[];
+    return rp.length>0&&insidePoly(rp,carrier);
+  };
+  const objectBelongsToCarrier=(obj,carrier)=>{
+    if(obj.carrierId)return obj.carrierId===carrier.id;
+    if(obj.roomId)return false;
+    const cp=shapeToPoly(carrier)||[];
+    return cp.length>0&&insidePoly(cp,obj);
+  };
 
   // Find carriers inside a room
   const carriersInRoom=(room)=>{
-    const rp=shapeToPoly(room)||[];
-    return rp.length>0 ? carriers.filter(c=>insidePoly(rp,c)) : [];
+    return carriers.filter(c=>carrierBelongsToRoom(c,room));
   };
   // Find objects inside a carrier
   const objectsOnCarrier=(carrier)=>{
-    const cp=shapeToPoly(carrier)||[];
-    return cp.length>0 ? objects.filter(o=>insidePoly(cp,o)) : [];
+    return objects.filter(o=>objectBelongsToCarrier(o,carrier));
   };
   // Find objects directly in a room (not on any carrier)
   const objectsInRoom=(room)=>{
     const rp=shapeToPoly(room)||[];
-    if(rp.length===0)return [];
-    const roomObjs=objects.filter(o=>insidePoly(rp,o));
+    const roomObjs=objects.filter(o=>{
+      if(o.carrierId)return false;
+      if(o.roomId)return o.roomId===room.id;
+      return rp.length>0&&insidePoly(rp,o);
+    });
     const onCarriers=new Set();
     carriersInRoom(room).forEach(c=>{
       objectsOnCarrier(c).forEach(o=>onCarriers.add(o.id));
@@ -716,13 +733,12 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,se
   };
   // Find rooms inside a map
   const roomsInMap=(map)=>{
-    const mp=shapeToPoly(map)||[];
-    return mp.length>0 ? rooms.filter(r=>{const rp=shapeToPoly(r)||[];return rp.length>0&&polyMostlyInside(mp,rp,0.8);}) : [];
+    return rooms.filter(r=>roomBelongsToMap(r,map));
   };
   // Unassigned rooms (not in any map)
-  const unassignedRooms=rooms.filter(r=>!maps.some(m=>{const mp=shapeToPoly(m);return mp&&insidePoly(mp,r);}));
+  const unassignedRooms=rooms.filter(r=>!maps.some(m=>roomBelongsToMap(r,m)));
   // Unassigned carriers (not in any room)
-  const unassignedCarriers=carriers.filter(c=>!rooms.some(r=>{const rp=shapeToPoly(r);return rp&&insidePoly(rp,c);}));
+  const unassignedCarriers=carriers.filter(c=>!rooms.some(r=>carrierBelongsToRoom(c,r)));
   // Unassigned objects (not in any room or carrier)
   const assignedObjIds=new Set();
   rooms.forEach(r=>{
