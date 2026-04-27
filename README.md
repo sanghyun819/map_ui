@@ -15,6 +15,7 @@ The app is designed for workflows where a map is not just an occupancy grid, but
 - Edit Nav2 `PGM` maps with brush, eraser, line, rectangle, circle, and fill tools
 - Load `YAML` map metadata and resolve relative image paths in Electron
 - Import and export editable `semantic_map.json`
+- Import Markdown catalogs for fixed room names, location/carrier lists, and known object classes
 - Draw semantic map, room, carrier, object, point-object, goal, start-pose, and waypoint layers
 - Click and drag to set yaw for start pose, waypoint, and semantic goal
 - Capture current robot pose from ROS2 or rosbag and save it as a start pose, waypoint, or semantic goal
@@ -114,6 +115,48 @@ The semantic layer supports these editable entities:
 `semantic_map.json` can be loaded back into the editor, modified, and saved again.
 When pixel coordinates exist in the JSON, the editor uses them directly.
 When only world coordinates exist, the editor projects them through the map `origin`, `resolution`, and image height.
+
+### Markdown Catalogs
+
+Use the `MD list` button to import Markdown files that define rooms, locations, and known objects.
+The editor parses these sections automatically:
+
+```markdown
+## Rooms
+| Name |
+| ------------ |
+| kitchen |
+| living room |
+| bedroom |
+| laundry room |
+```
+
+```markdown
+## Locations
+| Number | Name | Object Category |
+| ------------ | ----------- | ----------- |
+| 1 | fridge (p) |
+| 2 | kitchen counter (p) | dishes |
+| 6 | cabinet (p) | drinks |
+```
+
+`(p)` means objects can be placed at that location.
+Imported locations become carrier/location choices in the semantic dialog.
+The object category column is saved to semantic JSON as `object_category`.
+
+Known-object files are parsed from sections like this:
+
+```markdown
+# Class drinks (drink)
+
+| Objectname | Image |
+:-----------:|:-----:
+| cola | ![](known_objects/drinks!drink/cola.jpg) |
+| water | ![](known_objects/drinks!drink/water.jpg) |
+```
+
+Imported objects become object choices in the semantic object dialog.
+Their class/type/image metadata is preserved in semantic JSON.
 
 ## ROS2 Bridge
 

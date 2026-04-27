@@ -203,6 +203,7 @@ app.on("activate", () => {
 ipcMain.handle("dialog:openFile", async (event, options) => {
   const result = await dialog.showOpenDialog(mainWindow, options);
   if (result.canceled) return null;
+  if (options?.properties?.includes("multiSelections")) return result.filePaths;
   return result.filePaths[0];
 });
 

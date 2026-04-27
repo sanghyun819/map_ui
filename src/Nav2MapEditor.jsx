@@ -53,23 +53,13 @@ const START_POSE_ID = "nav2_start";
 
 // ─── Semantic type definitions ─────────────────────────────────────────────────
 const MAP_TYPES = [
-  { id:"floor",     label:"층/플로어", icon:"🏢", color:"#78909c", alpha:0.08 },
-  { id:"building",  label:"건물",      icon:"🏠", color:"#90a4ae", alpha:0.08 },
-  { id:"zone",      label:"구역",      icon:"🗺", color:"#a0b0b8", alpha:0.08 },
-  { id:"outdoor",   label:"실외",      icon:"🌳", color:"#66bb6a", alpha:0.08 },
-  { id:"custom",    label:"커스텀",    icon:"◈",  color:"#b0bec5", alpha:0.08 },
+  { id:"map", label:"map", icon:"🗺", color:"#90a4ae", alpha:0.08 },
 ];
 const ROOM_TYPES = [
-  { id:"bedroom",     label:"침실",     icon:"🛏",  color:"#4a90d9", alpha:0.18 },
-  { id:"living_room", label:"거실",     icon:"🛋",  color:"#7b68ee", alpha:0.18 },
-  { id:"kitchen",     label:"주방",     icon:"🍳",  color:"#ff8c00", alpha:0.18 },
-  { id:"bathroom",    label:"화장실",   icon:"🚿",  color:"#20b2aa", alpha:0.18 },
-  { id:"office",      label:"사무실",   icon:"💼",  color:"#3cb371", alpha:0.18 },
-  { id:"corridor",    label:"복도",     icon:"↔",   color:"#d4a843", alpha:0.13 },
-  { id:"storage",     label:"창고",     icon:"📦",  color:"#bc8f5f", alpha:0.18 },
-  { id:"entrance",    label:"현관",     icon:"🚪",  color:"#e74c8b", alpha:0.18 },
-  { id:"lab",         label:"연구실",   icon:"🔬",  color:"#00d4ff", alpha:0.15 },
-  { id:"conference",  label:"회의실",   icon:"🖥",  color:"#9b59b6", alpha:0.18 },
+  { id:"kitchen",      label:"kitchen",      icon:"▣", color:"#ff8c00", alpha:0.18 },
+  { id:"living_room",  label:"living room",  icon:"▣", color:"#7b68ee", alpha:0.18 },
+  { id:"bedroom",      label:"bedroom",      icon:"▣", color:"#4a90d9", alpha:0.18 },
+  { id:"laundry_room", label:"laundry room", icon:"▣", color:"#20b2aa", alpha:0.18 },
   { id:"custom",      label:"커스텀",   icon:"◈",   color:"#aaaaaa", alpha:0.15 },
 ];
 const CARRIER_TYPES = [
@@ -99,6 +89,111 @@ const OBJECT_TYPES = [
   { id:"obstacle",  label:"장애물(기타)", icon:"⬛",  color:"#ff5252", point:false },
   { id:"custom",    label:"커스텀",       icon:"◎",   color:"#eeeeee", point:true  },
 ];
+const CATALOG_COLORS=["#4fc3f7","#ffb74d","#ce93d8","#81c784","#90caf9","#f48fb1","#fff176","#80deea","#bcaaa4","#a5d6a7"];
+const DEFAULT_SEMANTIC_CATALOG={rooms:["kitchen","living room","bedroom","laundry room"],locations:[],objectClasses:[]};
+
+function catalogId(name){
+  return String(name||"").toLowerCase().replace(/\(p\)/gi,"").replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,"")||"custom";
+}
+function stripPlaceable(name){return String(name||"").replace(/\s*\(p\)\s*/gi,"").trim();}
+function mergeById(base,extra){
+  const seen=new Set(base.map(x=>x.id));
+  const out=[...base];
+  extra.forEach(x=>{if(x?.id&&!seen.has(x.id)){seen.add(x.id);out.push(x);}});
+  return out;
+}
+function markdownSection(text,heading){
+  const re=new RegExp(`^##\\s+${heading}\\s*$`,"im");
+  const m=text.match(re);
+  if(!m)return "";
+  const start=m.index+m[0].length;
+  const rest=text.slice(start);
+  const next=rest.search(/^#{1,2}\s+/m);
+  return next>=0?rest.slice(0,next):rest;
+}
+function tableRows(section){
+  return section.split("\n")
+    .map(line=>line.trim())
+    .filter(line=>line.startsWith("|"))
+    .map(line=>line.split("|").slice(1,-1).map(c=>c.trim()))
+    .filter(cols=>cols.length>0&&!cols.every(c=>/^:?-+:?$/.test(c))&&!cols[0].match(/^name$|^number$/i));
+}
+function parseSemanticMarkdown(text){
+  const catalog={rooms:[],locations:[],objectClasses:[]};
+  tableRows(markdownSection(text,"Rooms")).forEach(cols=>{
+    const name=cols[0]?.trim();
+    if(name)catalog.rooms.push(name);
+  });
+  tableRows(markdownSection(text,"Locations")).forEach(cols=>{
+    const nameRaw=cols[1]||cols[0];
+    const label=stripPlaceable(nameRaw);
+    if(!label||/^name$/i.test(label))return;
+    catalog.locations.push({
+      number:Number(cols[0])||null,
+      label,
+      placeable:/\(p\)/i.test(nameRaw),
+      objectCategory:(cols[2]||"").trim()||null,
+    });
+  });
+  const classRe=/^#\s+Class\s+([^(]+?)(?:\s*\(([^)]+)\))?\s*$/gim;
+  let match;
+  while((match=classRe.exec(text))){
+    const classLabel=match[1].trim();
+    const classType=(match[2]||classLabel).trim();
+    const start=match.index+match[0].length;
+    const rest=text.slice(start);
+    const next=rest.search(/^#\s+/m);
+    const section=next>=0?rest.slice(0,next):rest;
+    const objects=tableRows(section).map(cols=>{
+      const objectName=(cols[0]||"").trim();
+      const img=(cols[1]||"").match(/!\[[^\]]*\]\(([^)]+)\)/)?.[1]||"";
+      return objectName?{name:objectName,image:img}:null;
+    }).filter(Boolean);
+    if(objects.length)catalog.objectClasses.push({label:classLabel,type:classType,objects});
+  }
+  return catalog;
+}
+function buildRoomTypes(catalog){
+  const rooms=(catalog?.rooms?.length?catalog.rooms:DEFAULT_SEMANTIC_CATALOG.rooms).map((name,i)=>({
+    id:catalogId(name),label:name,icon:"▣",color:CATALOG_COLORS[i%CATALOG_COLORS.length],alpha:0.18,
+  }));
+  return mergeById(rooms,[ROOM_TYPES[ROOM_TYPES.length-1]]);
+}
+function buildCarrierTypes(catalog){
+  if(!catalog?.locations?.length)return CARRIER_TYPES;
+  const locs=catalog.locations.map((loc,i)=>({
+    id:catalogId(loc.label),label:loc.label,icon:loc.placeable?"▤":"▥",color:CATALOG_COLORS[i%CATALOG_COLORS.length],alpha:0.15,
+    catalog:loc,
+  }));
+  return mergeById(locs,[CARRIER_TYPES[CARRIER_TYPES.length-1]]);
+}
+function buildObjectTypes(catalog){
+  if(!catalog?.objectClasses?.length)return OBJECT_TYPES;
+  const objs=[];
+  catalog.objectClasses.forEach((cls,ci)=>{
+    cls.objects.forEach(obj=>{
+      objs.push({
+        id:catalogId(obj.name),label:obj.name,icon:"◎",color:CATALOG_COLORS[ci%CATALOG_COLORS.length],point:true,
+        objectClass:cls.label,objectType:cls.type,image:obj.image,
+      });
+    });
+  });
+  return mergeById(objs,[OBJECT_TYPES[OBJECT_TYPES.length-1]]);
+}
+function mergeSemanticCatalog(current,next){
+  const roomSet=new Set([...(current.rooms||[]),...(next.rooms||[])]);
+  const locMap=new Map((current.locations||[]).map(x=>[catalogId(x.label),x]));
+  (next.locations||[]).forEach(x=>locMap.set(catalogId(x.label),x));
+  const classMap=new Map((current.objectClasses||[]).map(x=>[catalogId(x.label),{...x,objects:[...(x.objects||[])]}]));
+  (next.objectClasses||[]).forEach(cls=>{
+    const key=catalogId(cls.label);
+    const prev=classMap.get(key)||{...cls,objects:[]};
+    const objMap=new Map((prev.objects||[]).map(o=>[catalogId(o.name),o]));
+    (cls.objects||[]).forEach(o=>objMap.set(catalogId(o.name),o));
+    classMap.set(key,{...cls,objects:[...objMap.values()]});
+  });
+  return{rooms:[...roomSet],locations:[...locMap.values()],objectClasses:[...classMap.values()]};
+}
 
 // ─── Geometry helpers ──────────────────────────────────────────────────────────
 function hexRgba(hex, a) {
@@ -322,8 +417,8 @@ const DRAW_COLORS=[
 ];
 
 // ─── Semantic type dialog ──────────────────────────────────────────────────────
-function SemanticDialog({mode, onConfirm, onCancel}) {
-  const typesList = mode==="map" ? MAP_TYPES : mode==="room" ? ROOM_TYPES : mode==="carrier" ? CARRIER_TYPES : OBJECT_TYPES;
+function SemanticDialog({mode, typeOptions, onConfirm, onCancel}) {
+  const typesList = mode==="map" ? typeOptions.maps : mode==="room" ? typeOptions.rooms : mode==="carrier" ? typeOptions.carriers : typeOptions.objects;
   const [type,setType]=useState(typesList[0].id);
   const [label,setLabel]=useState("");
   const selT=typesList.find(t=>t.id===type);
@@ -372,11 +467,11 @@ function SemanticDialog({mode, onConfirm, onCancel}) {
 }
 
 // ─── Goal dialog ─────────────────────────────────────────────────────────────
-function GoalDialog({rooms,carriers,objects,roomId,goalId,onConfirm,onCancel}){
+function GoalDialog({rooms,carriers,objects,roomId,goalId,typeOptions,onConfirm,onCancel}){
   // Targets are optional. A semantic goal can be just a pose, or it can face a carrier/object.
   const allTargets=[];
-  carriers.forEach(c=>{const ct=CARRIER_TYPES.find(t=>t.id===c.type);allTargets.push({id:c.id,label:c.label,icon:ct?.icon||"📦",type:"carrier",color:ct?.color||"#4fc3f7"});});
-  objects.forEach(o=>{const ot=OBJECT_TYPES.find(t=>t.id===o.type);allTargets.push({id:o.id,label:o.label,icon:ot?.icon||"🔹",type:"object",color:ot?.color||"#ffaa00"});});
+  carriers.forEach(c=>{const ct=typeOptions.carriers.find(t=>t.id===c.type);allTargets.push({id:c.id,label:c.label,icon:ct?.icon||"📦",type:"carrier",color:ct?.color||"#4fc3f7"});});
+  objects.forEach(o=>{const ot=typeOptions.objects.find(t=>t.id===o.type);allTargets.push({id:o.id,label:o.label,icon:ot?.icon||"🔹",type:"object",color:ot?.color||"#ffaa00"});});
   const [targetId,setTargetId]=useState(allTargets[0]?.id||"");
   const [label,setLabel]=useState("");
   const room=rooms.find(r=>r.id===roomId);
@@ -437,7 +532,7 @@ function GoalDialog({rooms,carriers,objects,roomId,goalId,onConfirm,onCancel}){
 }
 
 // ─── Semantic panel (4-level hierarchy: map > room > carrier > object) ───────
-function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,setWaypoints,onImportJSON,onExportJSON,toWorld,resolution}) {
+function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,setWaypoints,onImportJSON,onExportJSON,toWorld,resolution,typeOptions}) {
   const res=resolution||0.05;
   const [expanded,setExpanded]=useState({});
   const toggle=(id)=>setExpanded(p=>({...p,[id]:!p[id]}));
@@ -490,7 +585,7 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,se
   const unassignedObjects=objects.filter(o=>!assignedObjIds.has(o.id));
 
   const renderObj=(obj,indent=0)=>{
-    const ot=OBJECT_TYPES.find(t=>t.id===obj.type)||OBJECT_TYPES[OBJECT_TYPES.length-1];
+    const ot=typeOptions.objects.find(t=>t.id===obj.type)||typeOptions.objects[typeOptions.objects.length-1];
     const isSel=selId===obj.id;
     return(
       <div key={obj.id} onClick={e=>{e.stopPropagation();setSelId(isSel?null:obj.id);}} style={{
@@ -537,7 +632,7 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,se
   };
 
   const renderCarrier=(carrier,indent=0)=>{
-    const ct=CARRIER_TYPES.find(t=>t.id===carrier.type)||CARRIER_TYPES[CARRIER_TYPES.length-1];
+    const ct=typeOptions.carriers.find(t=>t.id===carrier.type)||typeOptions.carriers[typeOptions.carriers.length-1];
     const isSel=selId===carrier.id;
     const isExp=expanded[carrier.id];
     const nested=objectsOnCarrier(carrier);
@@ -576,7 +671,7 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,se
   };
 
   const renderRoom=(room,indent=0)=>{
-    const rt=ROOM_TYPES.find(t=>t.id===room.type)||ROOM_TYPES[ROOM_TYPES.length-1];
+    const rt=typeOptions.rooms.find(t=>t.id===room.type)||typeOptions.rooms[typeOptions.rooms.length-1];
     const poly=shapeToPoly(room)||[];
     const nestedCarriers=carriersInRoom(room);
     const nestedObjs=objectsInRoom(room);
@@ -632,7 +727,7 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,se
         )}
         {/* ── Maps ── */}
         {maps.map(m=>{
-          const mt=MAP_TYPES.find(t=>t.id===m.type)||MAP_TYPES[MAP_TYPES.length-1];
+          const mt=typeOptions.maps.find(t=>t.id===m.type)||typeOptions.maps[typeOptions.maps.length-1];
           const nestedRooms=roomsInMap(m);
           const isSel=selId===m.id, isExp=expanded[m.id];
           const isPoly=!!m.poly;
@@ -865,6 +960,13 @@ export default function Nav2MapEditor() {
   const [goalDlg,     setGoalDlg]     = useState(null); // {x, y, roomId}
   const [showSemPanel,setShowSemPanel]= useState(false);
   const [semOpacity,  setSemOpacity]  = useState(0.8);
+  const [semanticCatalog,setSemanticCatalog]=useState(DEFAULT_SEMANTIC_CATALOG);
+  const typeOptions=useMemo(()=>({
+    maps:MAP_TYPES,
+    rooms:buildRoomTypes(semanticCatalog),
+    carriers:buildCarrierTypes(semanticCatalog),
+    objects:buildObjectTypes(semanticCatalog),
+  }),[semanticCatalog]);
 
   // ROS2 state
   const ros2Bridge = useMemo(() => new Ros2Bridge(), []);
@@ -1069,28 +1171,28 @@ export default function Nav2MapEditor() {
 
     // ── Draw completed maps (behind everything) ──
     maps.forEach(m=>{
-      const mt=MAP_TYPES.find(t=>t.id===m.type)||MAP_TYPES[MAP_TYPES.length-1];
+      const mt=typeOptions.maps.find(t=>t.id===m.type)||typeOptions.maps[typeOptions.maps.length-1];
       const isSel=selSemId===m.id;
       drawPolygonItem(ctx, m, mt, isSel, alpha, isSel||hov===m.id);
     });
 
     // ── Draw completed rooms ──
     rooms.forEach(room=>{
-      const rt=ROOM_TYPES.find(t=>t.id===room.type)||ROOM_TYPES[ROOM_TYPES.length-1];
+      const rt=typeOptions.rooms.find(t=>t.id===room.type)||typeOptions.rooms[typeOptions.rooms.length-1];
       const isSel=selSemId===room.id;
       drawPolygonItem(ctx, room, rt, isSel, alpha, isSel||hov===room.id);
     });
 
     // ── Draw completed carriers ──
     carriers.forEach(carrier=>{
-      const ct=CARRIER_TYPES.find(t=>t.id===carrier.type)||CARRIER_TYPES[CARRIER_TYPES.length-1];
+      const ct=typeOptions.carriers.find(t=>t.id===carrier.type)||typeOptions.carriers[typeOptions.carriers.length-1];
       const isSel=selSemId===carrier.id;
       drawPolygonItem(ctx, carrier, ct, isSel, alpha, isSel||hov===carrier.id);
     });
 
     // ── Draw completed objects ──
     objects.forEach(obj=>{
-      const ot=OBJECT_TYPES.find(t=>t.id===obj.type)||OBJECT_TYPES[OBJECT_TYPES.length-1];
+      const ot=typeOptions.objects.find(t=>t.id===obj.type)||typeOptions.objects[typeOptions.objects.length-1];
       const isSel=selSemId===obj.id;
       const showLbl=isSel||hov===obj.id;
       if(obj.point){
@@ -1285,7 +1387,7 @@ export default function Nav2MapEditor() {
         ctx.restore();
       }
     }
-  },[maps,rooms,carriers,objects,startPose,waypoints,goals,selWpIdx,selSemId,semOpacity,polySnap,tool,drawRos2]);
+  },[maps,rooms,carriers,objects,startPose,waypoints,goals,selWpIdx,selSemId,semOpacity,polySnap,tool,drawRos2,typeOptions]);
 
   useEffect(()=>{drawOverlayRef.current=drawOverlay;},[drawOverlay]);
   useEffect(()=>{drawOverlay();},[drawOverlay]);
@@ -1617,14 +1719,14 @@ export default function Nav2MapEditor() {
     const {mode,rect,poly,point,pt}=semDlg;
 
     if(mode==="map"){
-      const mt=MAP_TYPES.find(t=>t.id===type)||MAP_TYPES[MAP_TYPES.length-1];
+      const mt=typeOptions.maps.find(t=>t.id===type)||typeOptions.maps[typeOptions.maps.length-1];
       const newMap=poly
         ?{id:muid(),type,label,color:mt.color,poly}
         :{id:muid(),type,label,color:mt.color,...rect};
       setMaps(p=>[...p,newMap]);setSelSemId(newMap.id);
       setStatus(`🗺 맵 영역 추가: ${label} (${poly?`${poly.length}꼭짓점`:`${rect.w}×${rect.h}px`})`);
     } else if(mode==="room"){
-      const rt=ROOM_TYPES.find(t=>t.id===type)||ROOM_TYPES[ROOM_TYPES.length-1];
+      const rt=typeOptions.rooms.find(t=>t.id===type)||typeOptions.rooms[typeOptions.rooms.length-1];
       const newRoom=poly
         ?{id:ruid(),type,label,color:rt.color,poly}
         :{id:ruid(),type,label,color:rt.color,...rect};
@@ -1638,10 +1740,15 @@ export default function Nav2MapEditor() {
       setRooms(p=>[...p,newRoom]);setSelSemId(newRoom.id);
       setStatus(`🏠 방 추가: ${label}${parentMap?` (${parentMap.label} 내)`:""} (${poly?`${poly.length}꼭짓점`:`${rect.w}×${rect.h}px`})`);
     } else if(mode==="carrier"){
-      const ct=CARRIER_TYPES.find(t=>t.id===type)||CARRIER_TYPES[CARRIER_TYPES.length-1];
+      const ct=typeOptions.carriers.find(t=>t.id===type)||typeOptions.carriers[typeOptions.carriers.length-1];
       const newCarrier=poly
         ?{id:cuid(),type,label,color:ct.color,poly}
         :{id:cuid(),type,label,color:ct.color,...rect};
+      if(ct.catalog){
+        newCarrier.placeable=!!ct.catalog.placeable;
+        newCarrier.objectCategory=ct.catalog.objectCategory||null;
+        newCarrier.locationNumber=ct.catalog.number||null;
+      }
       // Auto room assignment (80% overlap)
       const cpoly=shapeToPoly(newCarrier)||[];
       const parentRoom=rooms.find(r=>{
@@ -1652,13 +1759,18 @@ export default function Nav2MapEditor() {
       setCarriers(p=>[...p,newCarrier]);setSelSemId(newCarrier.id);
       setStatus(`📦 캐리어 추가: ${label}${parentRoom?` (${parentRoom.label} 내)`:""}`);
     } else {
-      const ot=OBJECT_TYPES.find(t=>t.id===type)||OBJECT_TYPES[OBJECT_TYPES.length-1];
+      const ot=typeOptions.objects.find(t=>t.id===type)||typeOptions.objects[typeOptions.objects.length-1];
       const isPoint=point||ot.point;
       const newObj=isPoint
         ?{id:ouid(),type,label,color:ot.color,point:true,x:pt?pt.x:poly?polyCentroid(poly).x:rect.x+rect.w/2,y:pt?pt.y:poly?polyCentroid(poly).y:rect.y+rect.h/2}
         :poly
           ?{id:ouid(),type,label,color:ot.color,poly}
           :{id:ouid(),type,label,color:ot.color,...rect};
+      if(ot.objectClass){
+        newObj.objectClass=ot.objectClass;
+        newObj.objectType=ot.objectType||null;
+        newObj.image=ot.image||null;
+      }
       // Auto carrier assignment first, then room (80% overlap)
       const shape=shapeToPoly(newObj)||[];
       const parentCarrier=carriers.find(c=>{
@@ -1675,7 +1787,7 @@ export default function Nav2MapEditor() {
       setStatus(`🔹 객체 추가: ${label}${parentCarrier?` (${parentCarrier.label} 위)`:parentRoom?` (${parentRoom.label} 내)`:""}`);
     }
     setSemDlg(null);
-  },[semDlg,maps,rooms,carriers]);
+  },[semDlg,maps,rooms,carriers,typeOptions]);
 
   // ── Goal confirm (update goal placed by drag with target + label) ──
   const onGoalConfirm=useCallback((targetId,label)=>{
@@ -1893,19 +2005,19 @@ export default function Nav2MapEditor() {
       };
 
       const nextMaps=(Array.isArray(data.maps)?data.maps:[])
-        .map((m,i)=>importArea(m,i,MAP_TYPES,"m","zone"))
+        .map((m,i)=>importArea(m,i,typeOptions.maps,"m","map"))
         .filter(Boolean);
       const nextRooms=(Array.isArray(data.rooms)?data.rooms:[])
-        .map((r,i)=>importArea(r,i,ROOM_TYPES,"r","custom",{mapId:r?.mapId||r?.map_id||null}))
+        .map((r,i)=>importArea(r,i,typeOptions.rooms,"r","custom",{mapId:r?.mapId||r?.map_id||null}))
         .filter(Boolean);
       const nextCarriers=(Array.isArray(data.carriers)?data.carriers:[])
-        .map((c,i)=>importArea(c,i,CARRIER_TYPES,"c","custom",{roomId:c?.roomId||c?.room_id||null}))
+        .map((c,i)=>importArea(c,i,typeOptions.carriers,"c","custom",{roomId:c?.roomId||c?.room_id||null,placeable:c?.placeable??null,objectCategory:c?.objectCategory||c?.object_category||null,locationNumber:c?.locationNumber||c?.location_number||null}))
         .filter(Boolean);
       const nextObjects=(Array.isArray(data.objects)?data.objects:[])
         .map((o,i)=>{
           const type=o.type||"custom";
-          const ot=OBJECT_TYPES.find(t=>t.id===type)||OBJECT_TYPES[OBJECT_TYPES.length-1];
-          const base={id:String(o.id||`o${i+1}`),type,label:String(o.label||ot.label||`o${i+1}`),color:ot.color,carrierId:o.carrierId||o.carrier_id||null,roomId:o.roomId||o.room_id||null};
+          const ot=typeOptions.objects.find(t=>t.id===type)||typeOptions.objects[typeOptions.objects.length-1];
+          const base={id:String(o.id||`o${i+1}`),type,label:String(o.label||ot.label||`o${i+1}`),color:ot.color,carrierId:o.carrierId||o.carrier_id||null,roomId:o.roomId||o.room_id||null,objectClass:o.objectClass||o.object_class||null,objectType:o.objectType||o.object_type||null,image:o.image||null};
           const shape=getPixelShape(o);
           const point=getPixelPoint(o);
           if((o.is_point===true||o.point===true||!shape)&&point)return {...base,point:true,x:point.x,y:point.y};
@@ -1951,7 +2063,7 @@ export default function Nav2MapEditor() {
       setStatus(`⚠ semantic JSON 오류: ${err.message}`);
       return false;
     }
-  },[meta,canvasSize,initCanvas,saveSnap]);
+  },[meta,canvasSize,initCanvas,saveSnap,typeOptions]);
 
   const tryAutoLoadSemantic=useCallback(async(dir,baseName,options={})=>{
     if(!isElectron||!window.electronAPI?.readFile||!dir||!baseName)return false;
@@ -1983,6 +2095,41 @@ export default function Nav2MapEditor() {
     e.target.value="";
     if(!file)return;
     await loadSemanticJSONData(await file.text(),file.name);
+  };
+
+  const importCatalogTexts=useCallback((items)=>{
+    const parsed=items.map(it=>parseSemanticMarkdown(it.text));
+    const merged=parsed.reduce((acc,cur)=>mergeSemanticCatalog(acc,cur),semanticCatalog);
+    setSemanticCatalog(merged);
+    const locCount=merged.locations.length;
+    const objCount=merged.objectClasses.reduce((n,c)=>n+(c.objects?.length||0),0);
+    setStatus(`✅ MD 카탈로그 로드: 방 ${merged.rooms.length} · 위치 ${locCount} · 객체 ${objCount}`);
+    setActiveTab("semantic");
+  },[semanticCatalog]);
+
+  const handleCatalogOpen=useCallback(async()=>{
+    if(!isElectron||!window.electronAPI?.openFileDialog){setStatus("⚠ MD 카탈로그 열기는 Electron 앱에서만 가능합니다");return;}
+    const selected=await window.electronAPI.openFileDialog({
+      filters:[{name:"Markdown catalog",extensions:["md"]},{name:"All files",extensions:["*"]}],
+      properties:["openFile","multiSelections"],
+    });
+    if(!selected)return;
+    const paths=Array.isArray(selected)?selected:[selected];
+    const items=[];
+    for(const p of paths){
+      const text=await window.electronAPI.readFile(p,"utf-8");
+      items.push({name:p.split("/").pop(),text});
+    }
+    importCatalogTexts(items);
+  },[importCatalogTexts]);
+
+  const handleCatalogFiles=async(e)=>{
+    const files=Array.from(e.target.files||[]);
+    e.target.value="";
+    if(files.length===0)return;
+    const items=[];
+    for(const file of files)items.push({name:file.name,text:await file.text()});
+    importCatalogTexts(items);
   };
 
   const handleFiles=async(e)=>{
@@ -2297,15 +2444,18 @@ export default function Nav2MapEditor() {
         const poly=shapeToPoly(c)||[];
         const bb=poly.length?polyBBox(poly):{x:c.x,y:c.y,x2:c.x+(c.w||0),y2:c.y+(c.h||0)};
         return{id:c.id,type:c.type,label:c.label,room_id:c.roomId||null,
+          placeable:c.placeable??null,object_category:c.objectCategory||null,location_number:c.locationNumber||null,
           polygon:polyWorld(poly),bbox:bboxWorld(bb),
           _pixel:{polygon:poly}};
       }),
       objects:objects.map(o=>{
         if(o.point)return{id:o.id,type:o.type,label:o.label,carrier_id:o.carrierId||null,room_id:o.roomId||null,
+          object_class:o.objectClass||null,object_type:o.objectType||null,image:o.image||null,
           position:tw(o.x,o.y),
           _pixel:{x:o.x,y:o.y}};
         const poly=shapeToPoly(o)||[];
         return{id:o.id,type:o.type,label:o.label,carrier_id:o.carrierId||null,room_id:o.roomId||null,
+          object_class:o.objectClass||null,object_type:o.objectType||null,image:o.image||null,
           polygon:polyWorld(poly),
           _pixel:{polygon:poly}};
       }),
@@ -2409,6 +2559,11 @@ export default function Nav2MapEditor() {
             <button style={btn()} onClick={handleSemanticOpen}>📥 시맨틱</button>
           ) : (
             <label style={{...btn(),cursor:"pointer"}}>📥 시맨틱<input type="file" accept=".json" onChange={handleSemanticFile} style={{display:"none"}}/></label>
+          )}
+          {isElectron ? (
+            <button style={btn()} onClick={handleCatalogOpen}>📋 MD목록</button>
+          ) : (
+            <label style={{...btn(),cursor:"pointer"}}>📋 MD목록<input type="file" accept=".md" multiple onChange={handleCatalogFiles} style={{display:"none"}}/></label>
           )}
           <button style={btn(showRos2Panel)} onClick={()=>setShowRos2Panel(v=>!v)}>🤖 ROS2{ros2State===ROS2_STATES.CONNECTED&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
           <button style={btn(show3DView)} onClick={()=>setShow3DView(v=>!v)}>🧊 3D</button>
@@ -2699,6 +2854,7 @@ export default function Nav2MapEditor() {
             onImportJSON={isElectron?handleSemanticOpen:null}
             onExportJSON={async()=>await nativeSave(`${meta.filename}_semantic.json`,[{name:"JSON",extensions:["json"]}],buildSemanticJSON(),"utf-8")}
             toWorld={toWorld} resolution={meta.resolution}
+            typeOptions={typeOptions}
           />
         )}
       </div>
@@ -2757,10 +2913,10 @@ export default function Nav2MapEditor() {
       )}
 
       {/* ── SEMANTIC TYPE DIALOG ── */}
-      {semDlg&&<SemanticDialog mode={semDlg.mode} onConfirm={onSemConfirm} onCancel={()=>setSemDlg(null)}/>}
+      {semDlg&&<SemanticDialog mode={semDlg.mode} typeOptions={typeOptions} onConfirm={onSemConfirm} onCancel={()=>setSemDlg(null)}/>}
 
       {/* ── GOAL DIALOG ── */}
-      {goalDlg&&<GoalDialog rooms={rooms} carriers={carriers} objects={objects} roomId={goalDlg.roomId} goalId={goalDlg.goalId} onConfirm={onGoalConfirm} onCancel={()=>{
+      {goalDlg&&<GoalDialog rooms={rooms} carriers={carriers} objects={objects} roomId={goalDlg.roomId} goalId={goalDlg.goalId} typeOptions={typeOptions} onConfirm={onGoalConfirm} onCancel={()=>{
         // Remove the goal that was placed during drag
         if(goalDlg.goalId) setGoals(p=>p.filter(g=>g.id!==goalDlg.goalId));
         setGoalDlg(null);
