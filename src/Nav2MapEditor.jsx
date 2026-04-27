@@ -2779,24 +2779,26 @@ export default function Nav2MapEditor() {
           <button style={btn()} onClick={fitView}>⊞</button>
           <div style={{width:1,height:16,background:"rgba(0,212,255,0.15)"}}/>
           <button style={btn()} onClick={()=>setShowMetaDlg(true)}>⚙ 메타</button>
-          <button style={btn(showSemPanel)} onClick={()=>setShowSemPanel(v=>!v)}>🗺 시맨틱{(maps.length+rooms.length+carriers.length+objects.length+goals.length+waypoints.length+(startPose?1:0))>0&&` (${maps.length+rooms.length+carriers.length+objects.length+goals.length+waypoints.length+(startPose?1:0)})`}</button>
-          {isElectron ? (
-            <button style={btn()} onClick={handleSemanticOpen}>📥 시맨틱</button>
-          ) : (
-            <label style={{...btn(),cursor:"pointer"}}>📥 시맨틱<input type="file" accept=".json" onChange={handleSemanticFile} style={{display:"none"}}/></label>
-          )}
-          <button style={btn(showCatalogPanel)} onClick={()=>setShowCatalogPanel(v=>!v)}>📋 MD목록 ({catalogCounts(semanticCatalog).rooms}/{catalogCounts(semanticCatalog).locations}/{catalogCounts(semanticCatalog).objects})</button>
-          <button style={btn(showRos2Panel)} onClick={()=>setShowRos2Panel(v=>!v)}>🤖 ROS2{ros2State===ROS2_STATES.CONNECTED&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
-          <button style={btn(show3DView)} onClick={()=>setShow3DView(v=>!v)}>🧊 3D</button>
-          {show3DView&&(
-            <div style={{display:"flex",gap:4,alignItems:"center",marginLeft:2}}>
-              {[["free","Free"],["top","Top"]].map(([id,l])=>(
-                <button key={id} style={{...btn(view3DMode===id),padding:"2px 7px",fontSize:10}} onClick={()=>setView3DMode(id)}>{l}</button>
-              ))}
-            </div>
-          )}
-          <div style={{flex:1}}/>
-          <span style={{color:"rgba(0,212,255,0.3)",fontSize:10}}>줌 {Math.round(zoom*100)}%{rotation%360!==0&&` · ${rotation%360}°`}</span>
+          <div style={{flex:"1 1 180px"}}/>
+          <div style={{display:"flex",alignItems:"center",gap:5,marginLeft:"auto",flexWrap:"wrap",justifyContent:"flex-end"}}>
+            <button style={btn(showSemPanel)} onClick={()=>setShowSemPanel(v=>!v)}>🗺 시맨틱{(maps.length+rooms.length+carriers.length+objects.length+goals.length+waypoints.length+(startPose?1:0))>0&&` (${maps.length+rooms.length+carriers.length+objects.length+goals.length+waypoints.length+(startPose?1:0)})`}</button>
+            {isElectron ? (
+              <button style={btn()} onClick={handleSemanticOpen}>📥 시맨틱</button>
+            ) : (
+              <label style={{...btn(),cursor:"pointer"}}>📥 시맨틱<input type="file" accept=".json" onChange={handleSemanticFile} style={{display:"none"}}/></label>
+            )}
+            <button style={btn(showCatalogPanel)} onClick={()=>setShowCatalogPanel(v=>!v)}>📋 MD목록 ({catalogCounts(semanticCatalog).rooms}/{catalogCounts(semanticCatalog).locations}/{catalogCounts(semanticCatalog).objects})</button>
+            <button style={btn(showRos2Panel)} onClick={()=>setShowRos2Panel(v=>!v)}>🤖 ROS2{ros2State===ROS2_STATES.CONNECTED&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
+            <button style={btn(show3DView)} onClick={()=>setShow3DView(v=>!v)}>🧊 3D</button>
+            {show3DView&&(
+              <div style={{display:"flex",gap:4,alignItems:"center",marginLeft:2}}>
+                {[["free","Free"],["top","Top"]].map(([id,l])=>(
+                  <button key={id} style={{...btn(view3DMode===id),padding:"2px 7px",fontSize:10}} onClick={()=>setView3DMode(id)}>{l}</button>
+                ))}
+              </div>
+            )}
+            <span style={{color:"rgba(0,212,255,0.3)",fontSize:10}}>줌 {Math.round(zoom*100)}%{rotation%360!==0&&` · ${rotation%360}°`}</span>
+          </div>
         </div>
 
         <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap",paddingTop:2,borderTop:"1px solid rgba(0,212,255,0.06)"}}>
