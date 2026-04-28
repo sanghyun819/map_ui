@@ -491,14 +491,24 @@ function SemanticDialog({mode, typeOptions, onConfirm, onCancel}) {
 // ─── Goal dialog ─────────────────────────────────────────────────────────────
 function GoalDialog({rooms,carriers,objects,roomId,goalId,typeOptions,onConfirm,onCancel}){
   // Targets are optional. A semantic goal can be just a pose, or it can face a carrier/object.
-  const allTargets=[];
-  carriers.forEach(c=>{const ct=typeOptions.carriers.find(t=>t.id===c.type);allTargets.push({id:c.id,label:c.label,icon:ct?.icon||"📦",type:"carrier",color:ct?.color||"#4fc3f7"});});
-  objects.forEach(o=>{const ot=typeOptions.objects.find(t=>t.id===o.type);allTargets.push({id:o.id,label:o.label,icon:ot?.icon||"🔹",type:"object",color:ot?.color||"#ffaa00"});});
+  const carrierTargets=carriers.map(c=>{const ct=typeOptions.carriers.find(t=>t.id===c.type);return{id:c.id,label:c.label,icon:ct?.icon||"📦",type:"carrier",color:ct?.color||"#4fc3f7"};});
+  const objectTargets=objects.map(o=>{const ot=typeOptions.objects.find(t=>t.id===o.type);return{id:o.id,label:o.label,icon:ot?.icon||"🔹",type:"object",color:ot?.color||"#ffaa00"};});
+  const allTargets=[...carrierTargets,...objectTargets];
   const [targetId,setTargetId]=useState(allTargets[0]?.id||"");
   const [label,setLabel]=useState("");
   const room=rooms.find(r=>r.id===roomId);
   const selectedTarget=allTargets.find(t=>t.id===targetId);
-  const defaultLabel=label||(selectedTarget?`${selectedTarget.label} approach`:(goalId||"semantic goal"));
+  const defaultLabel=label||(selectedTarget?`${room?`${room.label} view `:"view "}${selectedTarget.label}`:(room?`${room.label} semantic goal`:(goalId||"semantic goal")));
+  const renderTargetButton=(t)=>(
+    <button key={t.id} onClick={()=>setTargetId(t.id)} style={{
+      ...btn(targetId===t.id),textAlign:"left",padding:"6px 10px",
+      borderColor:targetId===t.id?t.color:undefined,
+      boxShadow:targetId===t.id?`0 0 8px ${t.color}44`:"none",
+    }}>
+      <span style={{fontSize:14}}>{t.icon}</span>
+      <span style={{fontSize:11,color:targetId===t.id?t.color:undefined}}>{t.label}</span>
+    </button>
+  );
   return(
     <div style={MODAL}>
       <div style={{...MBOX,minWidth:380}}>
@@ -521,23 +531,28 @@ function GoalDialog({rooms,carriers,objects,roomId,goalId,typeOptions,onConfirm,
             </button>
             {allTargets.length===0?(
               <div style={{color:"rgba(255,102,128,0.5)",fontSize:10,padding:"8px 10px",textAlign:"center"}}>캐리어/객체 없이도 골을 추가할 수 있습니다</div>
-            ):allTargets.map(t=>(
-                <button key={t.id} onClick={()=>setTargetId(t.id)} style={{
-                  ...btn(targetId===t.id),textAlign:"left",padding:"6px 10px",
-                  borderColor:targetId===t.id?t.color:undefined,
-                  boxShadow:targetId===t.id?`0 0 8px ${t.color}44`:"none",
-                }}>
-                  <span style={{fontSize:14}}>{t.icon}</span>
-                  <span style={{fontSize:11,color:targetId===t.id?t.color:undefined}}>{t.label}</span>
-                  <span style={{fontSize:9,opacity:.5,marginLeft:"auto"}}>{t.type==="carrier"?"캐리어":"객체"}</span>
-                </button>
-              ))
+            ):(
+              <>
+                {carrierTargets.length>0&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                    <div style={{fontSize:9,color:"rgba(79,195,247,0.65)",letterSpacing:1,padding:"3px 2px 1px"}}>CARRIERS</div>
+                    {carrierTargets.map(renderTargetButton)}
+                  </div>
+                )}
+                {objectTargets.length>0&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:3,marginTop:carrierTargets.length?7:0}}>
+                    <div style={{fontSize:9,color:"rgba(255,170,0,0.68)",letterSpacing:1,padding:"3px 2px 1px"}}>OBJECTS</div>
+                    {objectTargets.map(renderTargetButton)}
+                  </div>
+                )}
+              </>
+            )
             }
           </div>
         </div>
         <div style={{marginBottom:18}}>
           <div style={{fontSize:10,color:"rgba(0,212,255,0.5)",marginBottom:6,letterSpacing:1}}>골 라벨</div>
-          <input autoFocus placeholder="e.g. desk approach" value={label} onChange={e=>setLabel(e.target.value)}
+          <input autoFocus placeholder={defaultLabel} value={label} onChange={e=>setLabel(e.target.value)}
             onKeyDown={e=>e.key==="Enter"&&onConfirm(targetId,defaultLabel)}
             style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:13}}/>
         </div>
@@ -1920,11 +1935,6 @@ export default function Nav2MapEditor() {
       const newCarrier=poly
         ?{id:cuid(),type,label,color:ct.color,z:0,poly}
         :{id:cuid(),type,label,color:ct.color,z:0,...rect};
-      if(ct.catalog){
-        newCarrier.placeable=!!ct.catalog.placeable;
-        newCarrier.objectCategory=ct.catalog.objectCategory||null;
-        newCarrier.locationNumber=ct.catalog.number||null;
-      }
       // Auto room assignment (80% overlap)
       const cpoly=shapeToPoly(newCarrier)||[];
       const parentRoom=rooms.find(r=>{
@@ -1942,11 +1952,6 @@ export default function Nav2MapEditor() {
         :poly
           ?{id:ouid(),type,label,color:ot.color,poly}
           :{id:ouid(),type,label,color:ot.color,...rect};
-      if(ot.objectClass){
-        newObj.objectClass=ot.objectClass;
-        newObj.objectType=ot.objectType||null;
-        newObj.image=ot.image||null;
-      }
       // Auto carrier assignment first, then room (80% overlap)
       const shape=shapeToPoly(newObj)||[];
       const parentCarrier=carriers.find(c=>{
@@ -2187,13 +2192,13 @@ export default function Nav2MapEditor() {
         .map((r,i)=>importArea(r,i,typeOptions.rooms,"r","custom",{mapId:r?.mapId||r?.map_id||null}))
         .filter(Boolean);
       const nextCarriers=(Array.isArray(data.carriers)?data.carriers:[])
-        .map((c,i)=>importArea(c,i,typeOptions.carriers,"c","custom",{roomId:c?.roomId||c?.room_id||null,z:finiteNumber(c?.z??c?.z_m??c?.height,0),placeable:c?.placeable??null,objectCategory:c?.objectCategory||c?.object_category||null,locationNumber:c?.locationNumber||c?.location_number||null}))
+        .map((c,i)=>importArea(c,i,typeOptions.carriers,"c","custom",{roomId:c?.roomId||c?.room_id||null,z:finiteNumber(c?.z??c?.z_m??c?.height,0)}))
         .filter(Boolean);
       const nextObjects=(Array.isArray(data.objects)?data.objects:[])
         .map((o,i)=>{
           const type=o.type||"custom";
           const ot=typeOptions.objects.find(t=>t.id===type)||typeOptions.objects[typeOptions.objects.length-1];
-          const base={id:String(o.id||`o${i+1}`),type,label:String(o.label||ot.label||`o${i+1}`),color:ot.color,carrierId:o.carrierId||o.carrier_id||null,roomId:o.roomId||o.room_id||null,objectClass:o.objectClass||o.object_class||null,objectType:o.objectType||o.object_type||null,image:o.image||null};
+          const base={id:String(o.id||`o${i+1}`),type,label:String(o.label||ot.label||`o${i+1}`),color:ot.color,carrierId:o.carrierId||o.carrier_id||null,roomId:o.roomId||o.room_id||null};
           const shape=getPixelShape(o);
           const point=getPixelPoint(o);
           if((o.is_point===true||o.point===true||!shape)&&point)return {...base,point:true,x:point.x,y:point.y};
@@ -2669,18 +2674,15 @@ export default function Nav2MapEditor() {
         const z=+(Number(c.z)||0).toFixed(3);
         return{id:c.id,type:c.type,label:c.label,room_id:c.roomId||null,
           z,
-          placeable:c.placeable??null,object_category:c.objectCategory||null,location_number:c.locationNumber||null,
           polygon:polyWorld(poly),bbox:bboxWorld(bb),
           _pixel:{polygon:poly}};
       }),
       objects:objects.map(o=>{
         if(o.point)return{id:o.id,type:o.type,label:o.label,carrier_id:o.carrierId||null,room_id:o.roomId||null,
-          object_class:o.objectClass||null,object_type:o.objectType||null,image:o.image||null,
           position:tw(o.x,o.y),
           _pixel:{x:o.x,y:o.y}};
         const poly=shapeToPoly(o)||[];
         return{id:o.id,type:o.type,label:o.label,carrier_id:o.carrierId||null,room_id:o.roomId||null,
-          object_class:o.objectClass||null,object_type:o.objectType||null,image:o.image||null,
           polygon:polyWorld(poly),
           _pixel:{polygon:poly}};
       }),
