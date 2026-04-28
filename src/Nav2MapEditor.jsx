@@ -498,7 +498,7 @@ function GoalDialog({rooms,carriers,objects,roomId,goalId,typeOptions,onConfirm,
   const [label,setLabel]=useState("");
   const room=rooms.find(r=>r.id===roomId);
   const selectedTarget=allTargets.find(t=>t.id===targetId);
-  const defaultLabel=label||(selectedTarget?`${room?`${room.label} view `:"view "}${selectedTarget.label}`:(room?`${room.label} semantic goal`:(goalId||"semantic goal")));
+  const defaultLabel=label||(selectedTarget?`${room?`${room.label} to `:"to "}${selectedTarget.label}`:(room?`${room.label} goal`:(goalId||"semantic goal")));
   const renderTargetButton=(t)=>(
     <button key={t.id} onClick={()=>setTargetId(t.id)} style={{
       ...btn(targetId===t.id),textAlign:"left",padding:"6px 10px",
