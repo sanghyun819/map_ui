@@ -142,8 +142,9 @@ The editor parses these sections automatically:
 
 `(p)` means objects can be placed at that location.
 Imported locations become carrier/location choices in the semantic dialog.
-The object category column is saved to semantic JSON as `object_category`.
-Each carrier also has an editable `z` value in meters, which is exported to semantic JSON.
+The object category column is used only for catalog management and object/location selection.
+It is not exported to semantic JSON.
+Each carrier has an editable `z` value in meters, which is exported to semantic JSON.
 
 Known-object files are parsed from sections like this:
 
@@ -157,7 +158,7 @@ Known-object files are parsed from sections like this:
 ```
 
 Imported objects become object choices in the semantic object dialog.
-Their class/type/image metadata is preserved in semantic JSON.
+Class/type/image metadata is used only by the editor catalog and is not exported to semantic JSON.
 
 ## ROS2 Bridge
 
@@ -308,12 +309,15 @@ The semantic JSON includes:
 - `metadata`
 - `start_pose`
 - `maps`
-- `rooms`
-- `carriers` with editable `z`
-- `objects`
+- `rooms` with optional `map_id`
+- `carriers` with optional `room_id` and editable `z`
+- `objects` with optional `carrier_id` and `room_id`
 - `waypoints`
-- `goals`
-- `_pixel` helper fields for accurate round-trip editing
+- `goals` with optional `room_id` and `target_id`
+- `_pixel` helper fields for accurate round-trip editing in the UI
+
+The exported JSON intentionally does not include catalog-only fields such as carrier `placeable`,
+carrier object category/location number, object class, object type, or object image path.
 
 Example:
 
@@ -322,27 +326,127 @@ Example:
   "metadata": {
     "resolution": 0.05,
     "origin": [-10, -10, 0],
-    "image_size": { "w": 400, "h": 400 }
+    "image_size": { "w": 400, "h": 400 },
+    "created": "2026-04-28T00:00:00.000Z"
   },
   "start_pose": {
     "label": "Nav2 start",
     "position": { "x": 0.0, "y": 0.0, "z": 0.0 },
+    "orientation": { "x": 0, "y": 0, "z": 0.0, "w": 1.0 },
     "theta_rad": 0.0,
     "_pixel": { "x": 200, "y": 200 }
   },
-  "rooms": [],
+  "maps": [
+    {
+      "id": "m1",
+      "type": "map",
+      "label": "map",
+      "polygon": [
+        { "x": -10.0, "y": 10.0 },
+        { "x": 10.0, "y": 10.0 },
+        { "x": 10.0, "y": -10.0 },
+        { "x": -10.0, "y": -10.0 }
+      ],
+      "bbox": {
+        "min": { "x": -10.0, "y": -10.0 },
+        "max": { "x": 10.0, "y": 10.0 }
+      },
+      "_pixel": {
+        "polygon": [
+          { "x": 0, "y": 0 },
+          { "x": 400, "y": 0 },
+          { "x": 400, "y": 400 },
+          { "x": 0, "y": 400 }
+        ]
+      }
+    }
+  ],
+  "rooms": [
+    {
+      "id": "r1",
+      "type": "kitchen",
+      "label": "kitchen",
+      "map_id": "m1",
+      "polygon": [
+        { "x": -4.0, "y": 4.0 },
+        { "x": 4.0, "y": 4.0 },
+        { "x": 4.0, "y": -2.0 },
+        { "x": -4.0, "y": -2.0 }
+      ],
+      "bbox": {
+        "min": { "x": -4.0, "y": -2.0 },
+        "max": { "x": 4.0, "y": 4.0 }
+      },
+      "_pixel": {
+        "polygon": [
+          { "x": 120, "y": 120 },
+          { "x": 280, "y": 120 },
+          { "x": 280, "y": 240 },
+          { "x": 120, "y": 240 }
+        ]
+      }
+    }
+  ],
   "carriers": [
     {
       "id": "c1",
       "type": "kitchen_counter",
       "label": "kitchen counter",
+      "room_id": "r1",
       "z": 0.85,
-      "object_category": "dishes"
+      "polygon": [
+        { "x": -3.0, "y": 2.0 },
+        { "x": -1.0, "y": 2.0 },
+        { "x": -1.0, "y": 1.0 },
+        { "x": -3.0, "y": 1.0 }
+      ],
+      "bbox": {
+        "min": { "x": -3.0, "y": 1.0 },
+        "max": { "x": -1.0, "y": 2.0 }
+      },
+      "_pixel": {
+        "polygon": [
+          { "x": 140, "y": 160 },
+          { "x": 180, "y": 160 },
+          { "x": 180, "y": 180 },
+          { "x": 140, "y": 180 }
+        ]
+      }
     }
   ],
-  "objects": [],
-  "waypoints": [],
-  "goals": []
+  "objects": [
+    {
+      "id": "o1",
+      "type": "cup",
+      "label": "cup",
+      "carrier_id": "c1",
+      "room_id": "r1",
+      "position": { "x": -2.0, "y": 1.5 },
+      "_pixel": { "x": 160, "y": 170 }
+    }
+  ],
+  "waypoints": [
+    {
+      "id": "w1",
+      "label": "waypoint 1",
+      "position": { "x": 0.0, "y": 0.0, "z": 0.0 },
+      "orientation": { "x": 0, "y": 0, "z": 0.0, "w": 1.0 },
+      "theta_rad": 0.0,
+      "_pixel": { "x": 200, "y": 200 }
+    }
+  ],
+  "goals": [
+    {
+      "id": "g1",
+      "label": "kitchen to cup",
+      "room_id": "r1",
+      "target_id": "o1",
+      "position": { "x": -1.5, "y": 1.2, "z": 0.0 },
+      "orientation": { "x": 0, "y": 0, "z": 0.0, "w": 1.0 },
+      "theta_rad": 0.0,
+      "_pixel": { "x": 170, "y": 176 }
+    }
+  ]
 }
 ```
 
