@@ -18,6 +18,8 @@ README.md.save
 approach_mapping_test-*/
 mapui_required*/
 test1/
+map_0330/
+map_0330_semantic.json
 
 # Packaged desktop artifacts
 *.AppImage
