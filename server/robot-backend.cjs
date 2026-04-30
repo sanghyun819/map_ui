@@ -99,6 +99,36 @@ function readBagInfo(bagPath) {
   };
 }
 
+function fsRoots() {
+  return {
+    home: process.env.HOME || ROOT,
+    cwd: process.cwd(),
+    root: "/",
+  };
+}
+
+function readDirDetailed(dirPath) {
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true }).map(entry => {
+    const fullPath = path.join(dirPath, entry.name);
+    let stat = null;
+    try { stat = fs.statSync(fullPath); } catch (_) {}
+    return {
+      name: entry.name,
+      path: fullPath,
+      isDirectory: entry.isDirectory(),
+      isFile: entry.isFile(),
+      isSymbolicLink: entry.isSymbolicLink(),
+      size: stat?.size || 0,
+      mtimeMs: stat?.mtimeMs || 0,
+    };
+  });
+  entries.sort((a, b) => {
+    if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  return { path: dirPath, entries };
+}
+
 function currentBagOffset() {
   if (!bagProcess || !bagOptions) return bagOptions?.startOffset || 0;
   const now = bagPaused ? bagPausedAtMs : Date.now();
@@ -224,8 +254,10 @@ const apiRoutes = {
   },
   "POST /api/fs/readdir": async body => {
     if (!body.path) throw new Error("path is required");
+    if (body.withFileTypes) return readDirDetailed(body.path);
     return fs.readdirSync(body.path);
   },
+  "GET /api/fs/roots": async () => fsRoots(),
   "POST /api/rosbridge/start": async body => startRosbridgeProcess(body || {}),
   "POST /api/rosbridge/stop": async () => ({ running: false, stopped: stopRosbridgeProcess() }),
   "GET /api/rosbridge/status": async () => ({ running: !!rosbridgeProcess, output: rosbridgeLastOutput }),

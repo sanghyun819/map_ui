@@ -59,18 +59,10 @@ function createRobotBackendAPI(baseUrl) {
     if (!res.ok || json.ok === false) throw new Error(json.error || `${res.status} ${res.statusText}`);
     return json.data ?? json;
   };
-  const promptPath = (options = {}) => {
-    const multi = options?.properties?.includes("multiSelections");
-    const title = options?.title || (options?.properties?.includes("openDirectory") ? "Robot PC directory path" : "Robot PC file path");
-    const value = window.prompt(`${title}${multi ? "s (comma separated)" : ""}`, options?.defaultPath || "");
-    if (!value) return null;
-    if (multi) return value.split(",").map(x => x.trim()).filter(Boolean);
-    return value.trim();
-  };
   return {
     isRobotBackend: true,
-    openFileDialog: async (options) => promptPath(options),
-    saveFileDialog: async (options) => promptPath(options),
+    openFileDialog: async () => null,
+    saveFileDialog: async () => null,
     readFile: async (filePath, encoding) => {
       const data = await post("/api/file/read", { path: filePath, encoding: encoding || null });
       return data.binary ? base64ToArrayBuffer(data.data) : data.data;
@@ -85,6 +77,8 @@ function createRobotBackendAPI(baseUrl) {
       });
     },
     readDir: (dirPath) => post("/api/fs/readdir", { path: dirPath }),
+    browseDir: (dirPath) => post("/api/fs/readdir", { path: dirPath, withFileTypes: true }),
+    fsRoots: () => get("/api/fs/roots"),
     rosbridgeStart: (options) => post("/api/rosbridge/start", options),
     rosbridgeStop: () => post("/api/rosbridge/stop"),
     rosbridgeStatus: () => get("/api/rosbridge/status"),
@@ -113,9 +107,10 @@ function defaultRosbridgeUrl(port = 9090) {
 }
 
 // Native/robot-host file save helper with browser download fallback
-async function nativeSave(defaultName, filters, data, encoding) {
+async function nativeSave(defaultName, filters, data, encoding, pickPath) {
   if (hasHostAPI) {
-    const filePath = await hostAPI.saveFileDialog({
+    const filePath = await (pickPath || hostAPI.saveFileDialog)({
+      dialogType: "save",
       defaultPath: defaultName,
       filters: filters,
     });
@@ -135,9 +130,9 @@ async function nativeSave(defaultName, filters, data, encoding) {
 }
 
 // Native/robot-host file open helper
-async function nativeOpen(filters) {
+async function nativeOpen(filters, pickPath) {
   if (hasHostAPI) {
-    const filePath = await hostAPI.openFileDialog({
+    const filePath = await (pickPath || hostAPI.openFileDialog)({
       filters: filters,
       properties: ["openFile", "multiSelections"],
     });
@@ -406,6 +401,25 @@ function cleanYAMLScalar(value){
 function basenameFromPath(path){
   return (path||"").replace(/\\/g,"/").split("/").pop();
 }
+function dirnameFromPath(path){
+  const clean=(path||"").replace(/\\/g,"/").replace(/\/+$/,"");
+  if(!clean)return "";
+  const idx=clean.lastIndexOf("/");
+  if(idx<=0)return clean.startsWith("/")?"/":"";
+  return clean.slice(0,idx);
+}
+function joinRobotPath(dir,name){
+  if(!dir||dir==="/")return `/${name}`;
+  return `${dir.replace(/\/+$/,"")}/${name}`;
+}
+function parentRobotPath(dir){
+  const clean=(dir||"/").replace(/\\/g,"/").replace(/\/+$/,"")||"/";
+  if(clean==="/")return "/";
+  return dirnameFromPath(clean)||"/";
+}
+function pathLooksAbsolute(path){
+  return /^\//.test(path||"")||/^[A-Za-z]:[\\/]/.test(path||"");
+}
 function resolveMapPath(dir, relPath){
   const clean=cleanYAMLScalar(relPath||"");
   if(!clean)return "";
@@ -668,6 +682,175 @@ function GoalDialog({rooms,carriers,objects,roomId,goalId,typeOptions,onConfirm,
             onClick={()=>onConfirm(targetId,defaultLabel)}>
             🎯 추가
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function formatFileSize(bytes){
+  if(!Number.isFinite(bytes)||bytes<=0)return "";
+  if(bytes<1024)return `${bytes} B`;
+  if(bytes<1024*1024)return `${(bytes/1024).toFixed(1)} KB`;
+  if(bytes<1024*1024*1024)return `${(bytes/1024/1024).toFixed(1)} MB`;
+  return `${(bytes/1024/1024/1024).toFixed(1)} GB`;
+}
+function filterExtensions(filters){
+  const exts=(filters||[]).flatMap(f=>f.extensions||[]).map(x=>String(x).toLowerCase().replace(/^\./,""));
+  return exts.includes("*")?[]:exts.filter(Boolean);
+}
+function fileMatchesFilters(name,exts){
+  if(!exts.length)return true;
+  const ext=String(name||"").split(".").pop().toLowerCase();
+  return exts.includes(ext);
+}
+
+function RobotFileBrowser({api,request,onClose}){
+  const props=request?.properties||[];
+  const saveMode=request?.dialogType==="save";
+  const directoryMode=props.includes("openDirectory");
+  const multiMode=props.includes("multiSelections");
+  const exts=useMemo(()=>filterExtensions(request?.filters),[request]);
+  const [roots,setRoots]=useState(null);
+  const [currentPath,setCurrentPath]=useState("");
+  const [pathDraft,setPathDraft]=useState("");
+  const [entries,setEntries]=useState([]);
+  const [selected,setSelected]=useState([]);
+  const [fileName,setFileName]=useState("");
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState("");
+
+  const loadDir=useCallback(async(dir)=>{
+    const next=dir||"/";
+    setLoading(true);setError("");
+    try{
+      const res=await api.browseDir(next);
+      const resolved=res?.path||next;
+      setCurrentPath(resolved);
+      setPathDraft(resolved);
+      setEntries(res?.entries||[]);
+      setSelected([]);
+    }catch(e){
+      setError(e.message||String(e));
+    }finally{
+      setLoading(false);
+    }
+  },[api]);
+
+  useEffect(()=>{
+    let alive=true;
+    (async()=>{
+      const r=await api.fsRoots?.().catch(()=>({home:"/",cwd:"/",root:"/"}))||{home:"/",cwd:"/",root:"/"};
+      if(!alive)return;
+      setRoots(r);
+      const def=String(request?.defaultPath||"");
+      if(saveMode)setFileName(basenameFromPath(def)||"");
+      let initial=r.home||r.cwd||r.root||"/";
+      if(def&&pathLooksAbsolute(def)){
+        initial=saveMode?dirnameFromPath(def):(directoryMode?def:dirnameFromPath(def));
+      }
+      await loadDir(initial||"/");
+    })();
+    return()=>{alive=false;};
+  },[api,request,saveMode,directoryMode,loadDir]);
+
+  const visibleEntries=useMemo(()=>entries.filter(e=>{
+    if(e.isDirectory)return true;
+    if(directoryMode&&!saveMode)return false;
+    return fileMatchesFilters(e.name,exts);
+  }),[entries,directoryMode,saveMode,exts]);
+
+  const toggleSelected=(entry)=>{
+    if(entry.isDirectory){
+      if(directoryMode&&!saveMode)setSelected([entry.path]);
+      return;
+    }
+    if(saveMode){
+      setFileName(entry.name);
+      return;
+    }
+    if(multiMode){
+      setSelected(prev=>prev.includes(entry.path)?prev.filter(p=>p!==entry.path):[...prev,entry.path]);
+    }else{
+      setSelected([entry.path]);
+    }
+  };
+
+  const confirm=()=>{
+    if(saveMode){
+      const name=fileName.trim();
+      if(name)onClose(joinRobotPath(currentPath,name));
+      return;
+    }
+    if(directoryMode){
+      onClose(selected[0]||currentPath);
+      return;
+    }
+    if(multiMode)onClose(selected);
+    else onClose(selected[0]||null);
+  };
+
+  const canConfirm=saveMode?!!fileName.trim():directoryMode||selected.length>0;
+  const title=request?.title||(saveMode?"로봇 PC에 저장":directoryMode?"로봇 PC 폴더 선택":"로봇 PC 파일 선택");
+
+  return(
+    <div style={MODAL}>
+      <div style={{...MBOX,width:"min(760px,92vw)",height:"min(620px,86vh)",padding:0,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+        <div style={{padding:"12px 14px",borderBottom:"1px solid rgba(0,212,255,0.12)",display:"flex",alignItems:"center",gap:8}}>
+          <div style={{color:"#00d4ff",fontWeight:"bold",letterSpacing:1,fontSize:13}}>📁 {title}</div>
+          <div style={{marginLeft:"auto",display:"flex",gap:6}}>
+            {roots?.home&&<button style={{...btn(),fontSize:10,padding:"3px 7px"}} onClick={()=>loadDir(roots.home)}>Home</button>}
+            {roots?.cwd&&<button style={{...btn(),fontSize:10,padding:"3px 7px"}} onClick={()=>loadDir(roots.cwd)}>CWD</button>}
+            <button style={{...btn(),fontSize:10,padding:"3px 7px"}} onClick={()=>loadDir("/")}>/</button>
+          </div>
+        </div>
+        <div style={{padding:"10px 12px",borderBottom:"1px solid rgba(0,212,255,0.08)",display:"flex",gap:6}}>
+          <button style={{...btn(),padding:"5px 8px"}} onClick={()=>loadDir(parentRobotPath(currentPath))}>↑</button>
+          <input value={pathDraft} onChange={e=>setPathDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&loadDir(pathDraft)}
+            style={{...INPUT,flex:1,minWidth:0}}/>
+          <button style={btn(true)} onClick={()=>loadDir(pathDraft)}>이동</button>
+        </div>
+        {saveMode&&(
+          <div style={{padding:"10px 12px",borderBottom:"1px solid rgba(0,212,255,0.08)",display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:10,color:"rgba(0,212,255,0.48)",whiteSpace:"nowrap"}}>파일명</span>
+            <input value={fileName} onChange={e=>setFileName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&canConfirm&&confirm()}
+              style={{...INPUT,flex:1,minWidth:0}}/>
+          </div>
+        )}
+        <div style={{flex:1,overflow:"auto",padding:8}}>
+          {error&&<div style={{color:"#ff6680",fontSize:11,padding:10}}>⚠ {error}</div>}
+          {loading&&<div style={{color:"rgba(0,212,255,0.45)",fontSize:11,padding:10}}>읽는 중...</div>}
+          {!loading&&visibleEntries.length===0&&!error&&(
+            <div style={{color:"rgba(0,212,255,0.25)",fontSize:11,padding:20,textAlign:"center"}}>표시할 항목이 없습니다</div>
+          )}
+          {visibleEntries.map(entry=>{
+            const isSelected=selected.includes(entry.path)||saveMode&&fileName===entry.name;
+            return(
+              <div key={entry.path}
+                onClick={()=>toggleSelected(entry)}
+                onDoubleClick={()=>{
+                  if(entry.isDirectory)loadDir(entry.path);
+                  else if(saveMode)setFileName(entry.name);
+                  else if(!directoryMode&&!multiMode)onClose(entry.path);
+                }}
+                style={{display:"grid",gridTemplateColumns:"24px minmax(0,1fr) 90px 120px",gap:8,alignItems:"center",padding:"6px 8px",borderRadius:5,cursor:"pointer",
+                  background:isSelected?"rgba(0,212,255,0.16)":"transparent",border:`1px solid ${isSelected?"rgba(0,212,255,0.38)":"transparent"}`}}>
+                <span>{entry.isDirectory?"📁":"📄"}</span>
+                <span title={entry.path} style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:entry.isDirectory?"#c9fffe":"#8eb8c8"}}>{entry.name}</span>
+                <span style={{fontSize:10,color:"rgba(0,212,255,0.32)",textAlign:"right"}}>{entry.isDirectory?"dir":formatFileSize(entry.size)}</span>
+                <span style={{fontSize:10,color:"rgba(0,212,255,0.22)",textAlign:"right"}}>{entry.mtimeMs?new Date(entry.mtimeMs).toLocaleDateString():""}</span>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{padding:"10px 12px",borderTop:"1px solid rgba(0,212,255,0.1)",display:"flex",gap:8,alignItems:"center"}}>
+          <div style={{fontSize:10,color:"rgba(0,212,255,0.35)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+            {saveMode?joinRobotPath(currentPath,fileName||request?.defaultPath||""):(directoryMode?(selected[0]||currentPath):(multiMode?`${selected.length}개 선택`:(selected[0]||"선택 없음")))}
+          </div>
+          <div style={{marginLeft:"auto",display:"flex",gap:8}}>
+            <button style={btn()} onClick={()=>onClose(null)}>취소</button>
+            <button style={{...btn(true),opacity:canConfirm?1:.45}} disabled={!canConfirm} onClick={confirm}>선택</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1287,6 +1470,26 @@ export default function Nav2MapEditor() {
   const [bagSeekStep, setBagSeekStep] = useState(10);
   const [bagPaused, setBagPaused] = useState(false);
   const [bagBusy, setBagBusy] = useState(false);
+  const [fileDialog, setFileDialog] = useState(null);
+  const fileDialogResolveRef = useRef(null);
+
+  const pickHostPath=useCallback((options={})=>{
+    if(hostAPI?.isRobotBackend&&hostAPI?.browseDir){
+      return new Promise(resolve=>{
+        fileDialogResolveRef.current=resolve;
+        setFileDialog({...options,key:Date.now()});
+      });
+    }
+    const fn=options.dialogType==="save"?hostAPI?.saveFileDialog:hostAPI?.openFileDialog;
+    return fn?fn(options):Promise.resolve(null);
+  },[]);
+
+  const closeFileDialog=useCallback((value)=>{
+    const resolve=fileDialogResolveRef.current;
+    fileDialogResolveRef.current=null;
+    setFileDialog(null);
+    if(resolve)resolve(value||null);
+  },[]);
 
   useEffect(() => {
     const unsub = ros2Bridge.onStateChange(s => setRos2State(s));
@@ -2367,7 +2570,7 @@ export default function Nav2MapEditor() {
 
   const handleSemanticOpen=useCallback(async()=>{
     if(!hostAPI?.openFileDialog){setStatus("⚠ semantic JSON 열기는 Electron 또는 robot backend에서만 가능합니다");return;}
-    const filePath=await hostAPI.openFileDialog({
+    const filePath=await pickHostPath({
       filters:[{name:"Semantic JSON",extensions:["json"]},{name:"All files",extensions:["*"]}],
       properties:["openFile"],
     });
@@ -2375,7 +2578,7 @@ export default function Nav2MapEditor() {
     const name=filePath.split("/").pop();
     const text=await hostAPI.readFile(filePath,"utf-8");
     loadSemanticJSONData(text,name);
-  },[loadSemanticJSONData]);
+  },[loadSemanticJSONData,pickHostPath]);
 
   const handleSemanticFile=async(e)=>{
     const file=e.target.files?.[0];
@@ -2443,7 +2646,7 @@ export default function Nav2MapEditor() {
 
   const handleCatalogOpen=useCallback(async()=>{
     if(!hostAPI?.openFileDialog){setStatus("⚠ MD 카탈로그 열기는 Electron 또는 robot backend에서만 가능합니다");return;}
-    const selected=await hostAPI.openFileDialog({
+    const selected=await pickHostPath({
       filters:[{name:"Markdown catalog",extensions:["md"]},{name:"All files",extensions:["*"]}],
       properties:["openFile","multiSelections"],
     });
@@ -2455,7 +2658,7 @@ export default function Nav2MapEditor() {
       items.push({name:p.split("/").pop(),path:p,text});
     }
     importCatalogTexts(items);
-  },[importCatalogTexts]);
+  },[importCatalogTexts,pickHostPath]);
 
   const handleCatalogFiles=async(e)=>{
     const files=Array.from(e.target.files||[]);
@@ -2501,7 +2704,7 @@ export default function Nav2MapEditor() {
   };
 
   const handleNativeOpen=async ()=>{
-    const filePath = await hostAPI.openFileDialog({
+    const filePath = await pickHostPath({
       filters: [
         { name: "Map / Semantic files", extensions: ["pgm", "yaml", "yml", "json"] },
         { name: "All files", extensions: ["*"] },
@@ -2550,7 +2753,7 @@ export default function Nav2MapEditor() {
     const id=c.getContext("2d").getImageData(0,0,c.width,c.height);
     const gray=new Uint8Array(c.width*c.height);for(let i=0;i<gray.length;i++)gray[i]=id.data[i*4];
     const pgmData=writePGM(c.width,c.height,gray);
-    await nativeSave(`${meta.filename}.pgm`, [{ name: "PGM", extensions: ["pgm"] }], pgmData, null);
+    await nativeSave(`${meta.filename}.pgm`, [{ name: "PGM", extensions: ["pgm"] }], pgmData, null, pickHostPath);
     setStatus("💾 PGM 저장 완료");
   };
 
@@ -2654,7 +2857,7 @@ export default function Nav2MapEditor() {
 
   const chooseBagPath=useCallback(async()=>{
     if(!hostAPI?.openFileDialog){setStatus("⚠ bag 실행은 Electron 또는 robot backend에서만 가능합니다");return;}
-    const selected=await hostAPI.openFileDialog({
+    const selected=await pickHostPath({
       title:"ROS2 bag 폴더 선택",
       properties:["openDirectory"],
     });
@@ -2665,7 +2868,7 @@ export default function Nav2MapEditor() {
         setBagDuration(Number.isFinite(info?.duration)?info.duration:0);
       }catch(e){setBagDuration(0);}
     }
-  },[]);
+  },[pickHostPath]);
 
   const playBag=useCallback(async()=>{
     if(!hostAPI?.rosbagPlay){setStatus("⚠ bag 실행은 Electron 또는 robot backend에서만 가능합니다");return;}
@@ -2817,7 +3020,8 @@ export default function Nav2MapEditor() {
   const saveAll=async ()=>{
     const c=canvasRef.current;if(!c)return;
     if(hasHostAPI){
-      const dirPath = await hostAPI.saveFileDialog({
+      const dirPath = await pickHostPath({
+        dialogType:"save",
         defaultPath: meta.filename,
         filters: [{ name: "PGM", extensions: ["pgm"] }],
       });
@@ -3198,7 +3402,7 @@ export default function Nav2MapEditor() {
             }}
             setWaypoints={setWaypoints}
             onImportJSON={hasHostAPI?handleSemanticOpen:null}
-            onExportJSON={async()=>await nativeSave(`${meta.filename}_semantic.json`,[{name:"JSON",extensions:["json"]}],buildSemanticJSON(),"utf-8")}
+            onExportJSON={async()=>await nativeSave(`${meta.filename}_semantic.json`,[{name:"JSON",extensions:["json"]}],buildSemanticJSON(),"utf-8",pickHostPath)}
             toWorld={toWorld} resolution={meta.resolution}
             typeOptions={typeOptions}
           />
@@ -3267,6 +3471,11 @@ export default function Nav2MapEditor() {
         if(goalDlg.goalId) setGoals(p=>p.filter(g=>g.id!==goalDlg.goalId));
         setGoalDlg(null);
       }}/>}
+
+      {/* ── ROBOT PC FILE BROWSER ── */}
+      {fileDialog&&hostAPI?.isRobotBackend&&(
+        <RobotFileBrowser key={fileDialog.key} api={hostAPI} request={fileDialog} onClose={closeFileDialog}/>
+      )}
     </div>
   );
 }

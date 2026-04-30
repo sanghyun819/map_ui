@@ -120,8 +120,8 @@ Then open:
 http://<robot-pc-ip>:5173
 ```
 
-In remote-browser mode, file open/save dialogs ask for paths on the robot PC.
-For multi-file Markdown catalog import, enter comma-separated robot-PC paths.
+In remote-browser mode, file open/save buttons show a web file browser backed by the robot PC.
+Use it to browse robot-PC directories, select bag folders, import map/semantic/Markdown files, and choose save locations.
 When the `Bridge` button starts rosbridge through the robot backend, the UI connects to:
 
 ```text
