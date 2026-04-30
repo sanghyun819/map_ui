@@ -206,8 +206,8 @@ function TFTree({ availableFrames, stats }) {
 // ══════════════════════════════════════════════════════════════════
 // Main Panel
 // ══════════════════════════════════════════════════════════════════
-export default function Ros2Panel({ bridge, onVisChange, frames, onFramesChange, availableFrames, stats, meta, canvasSize, cameraDataUrl }) {
-  const [url, setUrl] = useState("ws://localhost:9090");
+export default function Ros2Panel({ bridge, defaultUrl = "ws://localhost:9090", onVisChange, frames, onFramesChange, availableFrames, stats, meta, canvasSize, cameraDataUrl }) {
+  const [url, setUrl] = useState(defaultUrl);
   const [connState, setConnState] = useState(bridge.state);
   const [topics, setTopics] = useState([]);
   const [loadingTopics, setLoadingTopics] = useState(false);
@@ -229,6 +229,10 @@ export default function Ros2Panel({ bridge, onVisChange, frames, onFramesChange,
     const unsub = bridge.onStateChange(s => setConnState(s));
     return unsub;
   }, [bridge]);
+
+  useEffect(() => {
+    setUrl(defaultUrl);
+  }, [defaultUrl]);
 
   const fetchTopics = useCallback(async () => {
     if (!bridge.connected) return;
@@ -328,7 +332,7 @@ export default function Ros2Panel({ bridge, onVisChange, frames, onFramesChange,
           <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
             <input value={url} onChange={e => setUrl(e.target.value)}
               onKeyDown={e => e.key === "Enter" && bridge.connect(url)}
-              style={{ ...S.input, flex: 1, fontSize: 10 }} placeholder="ws://localhost:9090" />
+              style={{ ...S.input, flex: 1, fontSize: 10 }} placeholder={defaultUrl} />
             {connState !== STATES.CONNECTED ? (
               <button style={S.btn()} onClick={() => { bridge._autoReconnect = true; bridge.connect(url); }}>▶</button>
             ) : (

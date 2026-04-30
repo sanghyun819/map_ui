@@ -13,15 +13,15 @@ The app is designed for workflows where a map is not just an occupancy grid, but
 ## Highlights
 
 - Edit Nav2 `PGM` maps with brush, eraser, line, rectangle, circle, and fill tools
-- Load `YAML` map metadata and resolve relative image paths in Electron
+- Load `YAML` map metadata and resolve relative image paths in Electron or robot-backend mode
 - Import and export editable `semantic_map.json`
 - Import Markdown catalogs for fixed room names, location/carrier lists, and known object classes
 - Draw semantic map, room, carrier, object, point-object, goal, start-pose, and waypoint layers
 - Click and drag to set yaw for start pose, waypoint, and semantic goal
 - Capture current robot pose from ROS2 or rosbag and save it as a start pose, waypoint, or semantic goal
 - Publish Nav2 initial pose to `/initialpose`
-- Launch and stop `rosbridge_server` from the Electron UI
-- Play, stop, pause, resume, seek, and loop ROS2 bags from the Electron UI
+- Launch and stop `rosbridge_server` from the built-in UI
+- Play, stop, pause, resume, seek, and loop ROS2 bags from the built-in UI
 - Visualize ROS2 LaserScan, PointCloud2, odometry, AMCL pose, path, image, and depth topics
 - Optional 3D view for map, PointCloud2, path, and robot pose inspection
 - Includes a ROS2 `semantic_nav2` package for semantic map serving, waypoint navigation, and semantic costmap experiments
@@ -45,7 +45,7 @@ For ROS2 integration:
 
 - ROS2 with Nav2
 - `rosbridge_suite`
-- A running `rosbridge_websocket` server, or the Electron app's built-in Bridge button
+- A running `rosbridge_websocket` server, or the built-in Bridge button in Electron/robot-backend mode
 
 ## Quick Start
 
@@ -85,6 +85,52 @@ Build desktop packages:
 npm run electron:build
 ```
 
+## Remote Robot Backend
+
+To use robot-PC features from another computer on the same Wi-Fi, run the robot backend on the robot PC.
+The backend serves the web UI and performs the privileged actions that a normal browser cannot do by itself:
+
+- Read and write files on the robot PC
+- Launch and stop `rosbridge_server`
+- Play, pause, seek, loop, and stop ROS2 bags
+
+Production-style run:
+
+```bash
+npm install
+npm run build
+npm run robot:server
+```
+
+Then open this from another PC:
+
+```text
+http://<robot-pc-ip>:8787
+```
+
+Development run:
+
+```bash
+npm run robot:dev
+```
+
+Then open:
+
+```text
+http://<robot-pc-ip>:5173
+```
+
+In remote-browser mode, file open/save dialogs ask for paths on the robot PC.
+For multi-file Markdown catalog import, enter comma-separated robot-PC paths.
+When the `Bridge` button starts rosbridge through the robot backend, the UI connects to:
+
+```text
+ws://<robot-pc-ip>:9090
+```
+
+Only run the robot backend on a trusted network.
+It intentionally exposes robot-PC file access and ROS command execution to the web UI.
+
 ## Map Workflow
 
 1. Open a `PGM` map or a Nav2 `YAML` map file.
@@ -93,7 +139,7 @@ npm run electron:build
 4. Use the semantic tools to add map areas, rooms, carriers, objects, start pose, waypoints, and goals.
 5. Save everything with full export, or save only the semantic JSON.
 
-Electron mode can automatically load a sibling semantic file:
+Electron/robot-backend mode can automatically load a sibling semantic file:
 
 - `map_name_semantic.json`
 - `semantic_map.json`
@@ -176,20 +222,26 @@ Run rosbridge manually:
 
 ```bash
 source /opt/ros/$ROS_DISTRO/setup.bash
-ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090
+ros2 launch rosbridge_server rosbridge_websocket_launch.xml address:=0.0.0.0 port:=9090
 ```
 
-Or, in Electron mode, use the `Bridge` button in the top ROS2 control row.
+Or, in Electron/robot-backend mode, use the `Bridge` button in the top ROS2 control row.
 It runs:
 
 ```bash
-ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090
+ros2 launch rosbridge_server rosbridge_websocket_launch.xml address:=0.0.0.0 port:=9090
 ```
 
 Then connect the ROS2 panel to:
 
 ```text
 ws://localhost:9090
+```
+
+When controlling the robot PC from another browser through `npm run robot:server`, connect to:
+
+```text
+ws://<robot-pc-ip>:9090
 ```
 
 ## ROS2 Topic Visualization
@@ -216,7 +268,7 @@ Use `map` as the fixed frame for most Nav2 workflows.
 
 ## ROS2 Bag Playback
 
-Electron mode can control rosbag playback directly from the UI:
+Electron/robot-backend mode can control rosbag playback directly from the UI:
 
 - Choose a bag directory
 - Play and stop
@@ -498,6 +550,8 @@ map_ui/
 │   │   ├── Ros2View3D.jsx
 │   │   └── useRos2Overlay.js
 │   └── semantic_nav2_package/
+├── server/
+│   └── robot-backend.cjs
 ├── index.html
 ├── package.json
 ├── package-lock.json
@@ -506,8 +560,9 @@ map_ui/
 
 ## Notes
 
-- Browser mode cannot launch OS processes, so rosbridge and rosbag controls are Electron-only.
-- Browser mode can still connect to an already-running rosbridge server.
+- Plain browser mode cannot launch OS processes, so rosbridge and rosbag controls require Electron or the robot backend.
+- Plain browser mode can still connect to an already-running rosbridge server.
+- Remote browser mode through `npm run robot:server` can launch rosbridge, control bags, and read/write robot-PC files through the backend.
 - For bag playback with TF and sensor data, include `/clock`, `/tf`, and `/tf_static` in the bag.
 - If pose markers remain visible, check whether TF display is enabled. Pose displays and TF displays are controlled independently.
 - If world coordinates look shifted, verify that the loaded `YAML` origin and resolution match the `PGM`.

@@ -56,9 +56,10 @@ function startRosbridgeProcess(options = {}) {
   rosbridgeLastOutput = "";
 
   const port = Number(options.port) || 9090;
+  const address = options.address || "0.0.0.0";
   const cmd = [
     rosSetupCommand(),
-    `exec ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=${port}`,
+    `exec ros2 launch rosbridge_server rosbridge_websocket_launch.xml address:=${address} port:=${port}`,
   ].join("; ");
 
   const child = spawn("bash", ["-lc", cmd], {
@@ -72,7 +73,7 @@ function startRosbridgeProcess(options = {}) {
     appendRosbridgeOutput(`\n[rosbridge exited code=${code} signal=${signal || ""}]\n`);
     if (rosbridgeProcess?.pid === child.pid) rosbridgeProcess = null;
   });
-  return { running: true, pid: child.pid, port };
+  return { running: true, pid: child.pid, port, address };
 }
 
 function readBagInfo(bagPath) {

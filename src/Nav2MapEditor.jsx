@@ -4,18 +4,123 @@ import Ros2Panel from "./ros2/Ros2Panel.jsx";
 import useRos2Overlay from "./ros2/useRos2Overlay.js";
 import Ros2View3D from "./ros2/Ros2View3D.jsx";
 
-// ─── Electron detection ────────────────────────────────────────────────────────
+// ─── Host API detection (Electron or robot backend) ────────────────────────────
 const isElectron = !!(window.electronAPI?.isElectron);
+const robotBackendEnabled = !isElectron && (
+  !!window.__ROBOT_BACKEND_URL__ ||
+  import.meta.env.VITE_ROBOT_BACKEND === "1" ||
+  window.location.port === "8787"
+);
+const robotBackendBase = (() => {
+  if (isElectron) return "";
+  const configured = window.__ROBOT_BACKEND_URL__ || import.meta.env.VITE_ROBOT_BACKEND_URL;
+  if (configured) return String(configured).replace(/\/+$/, "");
+  const port = import.meta.env.VITE_ROBOT_BACKEND_PORT || "8787";
+  return `${window.location.protocol}//${window.location.hostname}:${port}`;
+})();
 
-// Native file save helper (Electron) with browser fallback
+function base64ToArrayBuffer(base64) {
+  const binary = atob(base64 || "");
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function bytesToBase64(data) {
+  const bytes = data instanceof Uint8Array
+    ? data
+    : data instanceof ArrayBuffer
+      ? new Uint8Array(data)
+      : ArrayBuffer.isView(data)
+        ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+        : new TextEncoder().encode(String(data ?? ""));
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function createRobotBackendAPI(baseUrl) {
+  const post = async (path, body = {}) => {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || json.ok === false) throw new Error(json.error || `${res.status} ${res.statusText}`);
+    return json.data ?? json;
+  };
+  const get = async (path) => {
+    const res = await fetch(`${baseUrl}${path}`);
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || json.ok === false) throw new Error(json.error || `${res.status} ${res.statusText}`);
+    return json.data ?? json;
+  };
+  const promptPath = (options = {}) => {
+    const multi = options?.properties?.includes("multiSelections");
+    const title = options?.title || (options?.properties?.includes("openDirectory") ? "Robot PC directory path" : "Robot PC file path");
+    const value = window.prompt(`${title}${multi ? "s (comma separated)" : ""}`, options?.defaultPath || "");
+    if (!value) return null;
+    if (multi) return value.split(",").map(x => x.trim()).filter(Boolean);
+    return value.trim();
+  };
+  return {
+    isRobotBackend: true,
+    openFileDialog: async (options) => promptPath(options),
+    saveFileDialog: async (options) => promptPath(options),
+    readFile: async (filePath, encoding) => {
+      const data = await post("/api/file/read", { path: filePath, encoding: encoding || null });
+      return data.binary ? base64ToArrayBuffer(data.data) : data.data;
+    },
+    writeFile: async (filePath, data, encoding) => {
+      const binary = !encoding && (data instanceof Uint8Array || data instanceof ArrayBuffer || ArrayBuffer.isView(data));
+      return post("/api/file/write", {
+        path: filePath,
+        encoding: encoding || null,
+        binary,
+        data: binary ? bytesToBase64(data) : String(data ?? ""),
+      });
+    },
+    readDir: (dirPath) => post("/api/fs/readdir", { path: dirPath }),
+    rosbridgeStart: (options) => post("/api/rosbridge/start", options),
+    rosbridgeStop: () => post("/api/rosbridge/stop"),
+    rosbridgeStatus: () => get("/api/rosbridge/status"),
+    rosbagPlay: (options) => post("/api/rosbag/play", options),
+    rosbagInfo: (bagPath) => post("/api/rosbag/info", { path: bagPath }),
+    rosbagStop: () => post("/api/rosbag/stop"),
+    rosbagPause: () => post("/api/rosbag/pause"),
+    rosbagResume: () => post("/api/rosbag/resume"),
+    rosbagSeek: (options) => post("/api/rosbag/seek", options),
+    rosbagStatus: () => get("/api/rosbag/status"),
+  };
+}
+
+const hostAPI = window.electronAPI || (robotBackendEnabled ? createRobotBackendAPI(robotBackendBase) : null);
+const hasHostAPI = !!hostAPI;
+
+function defaultRosbridgeUrl(port = 9090) {
+  if (!hostAPI?.isRobotBackend) return `ws://localhost:${port}`;
+  try {
+    const u = new URL(robotBackendBase);
+    const protocol = u.protocol === "https:" ? "wss" : "ws";
+    return `${protocol}://${u.hostname}:${port}`;
+  } catch (e) {
+    return `ws://${window.location.hostname}:${port}`;
+  }
+}
+
+// Native/robot-host file save helper with browser download fallback
 async function nativeSave(defaultName, filters, data, encoding) {
-  if (isElectron) {
-    const filePath = await window.electronAPI.saveFileDialog({
+  if (hasHostAPI) {
+    const filePath = await hostAPI.saveFileDialog({
       defaultPath: defaultName,
       filters: filters,
     });
     if (!filePath) return false;
-    await window.electronAPI.writeFile(filePath, data, encoding);
+    await hostAPI.writeFile(filePath, data, encoding);
     return filePath;
   }
   // Browser fallback
@@ -29,19 +134,20 @@ async function nativeSave(defaultName, filters, data, encoding) {
   return defaultName;
 }
 
-// Native file open helper (Electron) with browser fallback
+// Native/robot-host file open helper
 async function nativeOpen(filters) {
-  if (isElectron) {
-    const filePath = await window.electronAPI.openFileDialog({
+  if (hasHostAPI) {
+    const filePath = await hostAPI.openFileDialog({
       filters: filters,
       properties: ["openFile", "multiSelections"],
     });
     if (!filePath) return null;
-    const name = filePath.split("/").pop();
+    const firstPath = Array.isArray(filePath) ? filePath[0] : filePath;
+    const name = firstPath.split("/").pop();
     const ext = name.split(".").pop().toLowerCase();
     const encoding = (ext === "pgm") ? null : "utf-8";
-    const raw = await window.electronAPI.readFile(filePath, encoding);
-    return [{ name, path: filePath, data: raw }];
+    const raw = await hostAPI.readFile(firstPath, encoding);
+    return [{ name, path: firstPath, data: raw }];
   }
   return null;
 }
@@ -569,7 +675,7 @@ function GoalDialog({rooms,carriers,objects,roomId,goalId,typeOptions,onConfirm,
 }
 
 // ─── Markdown catalog management panel ───────────────────────────────────────
-function CatalogPanel({catalog,sources,isElectron,onImport,onFileImport,onRemoveSource,onReset,onAddRoom}) {
+function CatalogPanel({catalog,sources,hasHostAPI,onImport,onFileImport,onRemoveSource,onReset,onAddRoom}) {
   const [view,setView]=useState("sources");
   const [roomName,setRoomName]=useState("");
   const counts=catalogCounts(catalog);
@@ -588,7 +694,7 @@ function CatalogPanel({catalog,sources,isElectron,onImport,onFileImport,onRemove
         <span style={{opacity:.45,fontSize:10}}>{counts.rooms}R·{counts.locations}L·{counts.objects}O</span>
       </div>
       <div style={{padding:10,borderBottom:"1px solid rgba(0,212,255,0.08)",display:"flex",gap:5,flexWrap:"wrap"}}>
-        {isElectron ? (
+        {hasHostAPI ? (
           <button style={{...btn(true),fontSize:11,padding:"4px 8px"}} onClick={onImport}>＋ MD</button>
         ) : (
           <label style={{...btn(true),fontSize:11,padding:"4px 8px",cursor:"pointer"}}>＋ MD<input type="file" accept=".md" multiple onChange={onFileImport} style={{display:"none"}}/></label>
@@ -1317,11 +1423,11 @@ export default function Nav2MapEditor() {
   const drawOverlayRef = useRef(null);
 
   useEffect(()=>{
-    if(!isElectron||!window.electronAPI?.rosbridgeStatus)return;
+    if(!hostAPI?.rosbridgeStatus)return;
     let alive=true;
     const sync=async()=>{
       try{
-        const st=await window.electronAPI.rosbridgeStatus();
+        const st=await hostAPI.rosbridgeStatus();
         if(alive)setRosbridgeRunning(!!st?.running);
       }catch(e){/* ignore */}
     };
@@ -1331,11 +1437,11 @@ export default function Nav2MapEditor() {
   },[]);
 
   useEffect(()=>{
-    if(!isElectron||!window.electronAPI?.rosbagStatus)return;
+    if(!hostAPI?.rosbagStatus)return;
     let alive=true;
     const sync=async()=>{
       try{
-        const st=await window.electronAPI.rosbagStatus();
+        const st=await hostAPI.rosbagStatus();
         if(alive){
           setBagRunning(!!st?.running);
           setBagPaused(!!st?.paused);
@@ -2076,7 +2182,7 @@ export default function Nav2MapEditor() {
     window.addEventListener("keydown",onKey);return()=>window.removeEventListener("keydown",onKey);
   },[undo,redo,selSemId,selWpIdx,tool,finishPolygon,deleteSelected,rotateMap]);
 
-  // ── File I/O (Electron native + browser fallback) ──
+  // ── File I/O (host API + browser fallback) ──
   const loadPGMData=(name, buffer)=>{
     try{
       const{width,height,data}=parsePGM(buffer);
@@ -2247,12 +2353,12 @@ export default function Nav2MapEditor() {
   },[meta,canvasSize,initCanvas,saveSnap,typeOptions]);
 
   const tryAutoLoadSemantic=useCallback(async(dir,baseName,options={})=>{
-    if(!isElectron||!window.electronAPI?.readFile||!dir||!baseName)return false;
+    if(!hostAPI?.readFile||!dir||!baseName)return false;
     const clean=baseName.replace(/\.(pgm|yaml|yml)$/i,"").replace(/_semantic$/i,"");
     const candidates=[`${clean}_semantic.json`,"semantic_map.json"];
     for(const candidate of candidates){
       try{
-        const text=await window.electronAPI.readFile(`${dir}/${candidate}`,"utf-8");
+        const text=await hostAPI.readFile(`${dir}/${candidate}`,"utf-8");
         if(text&&loadSemanticJSONData(text,candidate,options))return true;
       }catch(e){/* not found or unreadable; try next */}
     }
@@ -2260,14 +2366,14 @@ export default function Nav2MapEditor() {
   },[loadSemanticJSONData]);
 
   const handleSemanticOpen=useCallback(async()=>{
-    if(!isElectron||!window.electronAPI?.openFileDialog){setStatus("⚠ semantic JSON 열기는 Electron 앱에서만 가능합니다");return;}
-    const filePath=await window.electronAPI.openFileDialog({
+    if(!hostAPI?.openFileDialog){setStatus("⚠ semantic JSON 열기는 Electron 또는 robot backend에서만 가능합니다");return;}
+    const filePath=await hostAPI.openFileDialog({
       filters:[{name:"Semantic JSON",extensions:["json"]},{name:"All files",extensions:["*"]}],
       properties:["openFile"],
     });
     if(!filePath)return;
     const name=filePath.split("/").pop();
-    const text=await window.electronAPI.readFile(filePath,"utf-8");
+    const text=await hostAPI.readFile(filePath,"utf-8");
     loadSemanticJSONData(text,name);
   },[loadSemanticJSONData]);
 
@@ -2336,8 +2442,8 @@ export default function Nav2MapEditor() {
   },[]);
 
   const handleCatalogOpen=useCallback(async()=>{
-    if(!isElectron||!window.electronAPI?.openFileDialog){setStatus("⚠ MD 카탈로그 열기는 Electron 앱에서만 가능합니다");return;}
-    const selected=await window.electronAPI.openFileDialog({
+    if(!hostAPI?.openFileDialog){setStatus("⚠ MD 카탈로그 열기는 Electron 또는 robot backend에서만 가능합니다");return;}
+    const selected=await hostAPI.openFileDialog({
       filters:[{name:"Markdown catalog",extensions:["md"]},{name:"All files",extensions:["*"]}],
       properties:["openFile","multiSelections"],
     });
@@ -2345,7 +2451,7 @@ export default function Nav2MapEditor() {
     const paths=Array.isArray(selected)?selected:[selected];
     const items=[];
     for(const p of paths){
-      const text=await window.electronAPI.readFile(p,"utf-8");
+      const text=await hostAPI.readFile(p,"utf-8");
       items.push({name:p.split("/").pop(),path:p,text});
     }
     importCatalogTexts(items);
@@ -2395,7 +2501,7 @@ export default function Nav2MapEditor() {
   };
 
   const handleNativeOpen=async ()=>{
-    const filePath = await window.electronAPI.openFileDialog({
+    const filePath = await hostAPI.openFileDialog({
       filters: [
         { name: "Map / Semantic files", extensions: ["pgm", "yaml", "yml", "json"] },
         { name: "All files", extensions: ["*"] },
@@ -2406,27 +2512,27 @@ export default function Nav2MapEditor() {
     const name = filePath.split("/").pop();
     const dir = filePath.substring(0, filePath.lastIndexOf("/"));
     if(/\.pgm$/i.test(name)){
-      const buf = await window.electronAPI.readFile(filePath, null);
+      const buf = await hostAPI.readFile(filePath, null);
       const loadedSize=loadPGMData(name, toArrayBufferData(buf));
       // Auto-detect YAML in same directory
       const baseName=name.replace(/\.pgm$/i,"");
       let yamlMeta=null;
       for(const yamlName of [`${baseName}.yaml`,`${baseName}.yml`]){
         try{
-          const yamlText=await window.electronAPI.readFile(`${dir}/${yamlName}`,"utf-8");
+          const yamlText=await hostAPI.readFile(`${dir}/${yamlName}`,"utf-8");
           if(yamlText){yamlMeta=loadYAMLData(yamlText,yamlName);setStatus(`✅ PGM + YAML 로드 완료`);break;}
         }catch(e){/* yaml not found, skip */}
       }
       await tryAutoLoadSemantic(dir,baseName,{meta:yamlMeta,canvasSize:loadedSize});
     } else if(/\.(yaml|yml)$/i.test(name)){
-      const text = await window.electronAPI.readFile(filePath, "utf-8");
+      const text = await hostAPI.readFile(filePath, "utf-8");
       const parsed=loadYAMLData(text,name);
       let loadedSize=null;
       // Auto-detect PGM from yaml content or same directory
       if(parsed.image){
         const pgmPath=resolveMapPath(dir,parsed.image);
         try{
-          const buf=await window.electronAPI.readFile(pgmPath,null);
+          const buf=await hostAPI.readFile(pgmPath,null);
           loadedSize=loadPGMData(basenameFromPath(parsed.image),toArrayBufferData(buf));
           setStatus(`✅ YAML + PGM 로드 완료`);
         }catch(e){setStatus("✅ YAML 로드 (PGM 파일을 찾을 수 없음: "+parsed.image+")");}
@@ -2434,7 +2540,7 @@ export default function Nav2MapEditor() {
       const baseName=(parsed.image?basenameFromPath(parsed.image):name).replace(/\.(pgm|yaml|yml)$/i,"");
       await tryAutoLoadSemantic(dir,baseName,{meta:parsed,canvasSize:loadedSize});
     } else if(/\.json$/i.test(name)){
-      const text=await window.electronAPI.readFile(filePath,"utf-8");
+      const text=await hostAPI.readFile(filePath,"utf-8");
       loadSemanticJSONData(text,name);
     }
   };
@@ -2513,15 +2619,16 @@ export default function Nav2MapEditor() {
   },[robotPoseToCanvas,saveSnap]);
 
   const startRosbridge=useCallback(async()=>{
-    if(!isElectron||!window.electronAPI?.rosbridgeStart){setStatus("⚠ rosbridge 실행은 Electron 앱에서만 가능합니다");return;}
+    if(!hostAPI?.rosbridgeStart){setStatus("⚠ rosbridge 실행은 Electron 또는 robot backend에서만 가능합니다");return;}
     setRosbridgeBusy(true);
     try{
-      const res=await window.electronAPI.rosbridgeStart({port:9090});
+      const res=await hostAPI.rosbridgeStart({port:9090});
       setRosbridgeRunning(!!res?.running);
-      setStatus("🌉 rosbridge 실행: ws://localhost:9090");
+      const bridgeUrl=defaultRosbridgeUrl(9090);
+      setStatus(`🌉 rosbridge 실행: ${bridgeUrl}`);
       setTimeout(()=>{
         ros2Bridge._autoReconnect=true;
-        ros2Bridge.connect("ws://localhost:9090");
+        ros2Bridge.connect(bridgeUrl);
       },700);
     }catch(e){
       setStatus(`⚠ rosbridge 실행 실패: ${e.message}`);
@@ -2531,10 +2638,10 @@ export default function Nav2MapEditor() {
   },[ros2Bridge]);
 
   const stopRosbridge=useCallback(async()=>{
-    if(!isElectron||!window.electronAPI?.rosbridgeStop)return;
+    if(!hostAPI?.rosbridgeStop)return;
     setRosbridgeBusy(true);
     try{
-      await window.electronAPI.rosbridgeStop();
+      await hostAPI.rosbridgeStop();
       setRosbridgeRunning(false);
       ros2Bridge.disconnect();
       setStatus("🌉 rosbridge 중지");
@@ -2546,27 +2653,27 @@ export default function Nav2MapEditor() {
   },[ros2Bridge]);
 
   const chooseBagPath=useCallback(async()=>{
-    if(!isElectron||!window.electronAPI?.openFileDialog){setStatus("⚠ bag 실행은 Electron 앱에서만 가능합니다");return;}
-    const selected=await window.electronAPI.openFileDialog({
+    if(!hostAPI?.openFileDialog){setStatus("⚠ bag 실행은 Electron 또는 robot backend에서만 가능합니다");return;}
+    const selected=await hostAPI.openFileDialog({
       title:"ROS2 bag 폴더 선택",
       properties:["openDirectory"],
     });
     if(selected){
       setBagPath(selected);setBagOffset(0);
       try{
-        const info=await window.electronAPI.rosbagInfo?.(selected);
+        const info=await hostAPI.rosbagInfo?.(selected);
         setBagDuration(Number.isFinite(info?.duration)?info.duration:0);
       }catch(e){setBagDuration(0);}
     }
   },[]);
 
   const playBag=useCallback(async()=>{
-    if(!isElectron||!window.electronAPI?.rosbagPlay){setStatus("⚠ bag 실행은 Electron 앱에서만 가능합니다");return;}
+    if(!hostAPI?.rosbagPlay){setStatus("⚠ bag 실행은 Electron 또는 robot backend에서만 가능합니다");return;}
     if(!bagPath){setStatus("⚠ 재생할 bag 폴더를 먼저 선택하세요");return;}
     setBagBusy(true);
     try{
       const startOffset=bagDuration>0&&bagOffset>=Math.max(0,bagDuration-0.25)?0:bagOffset;
-      const res=await window.electronAPI.rosbagPlay({path:bagPath,clock:true,loop:bagLoop,rate:bagRate,startOffset});
+      const res=await hostAPI.rosbagPlay({path:bagPath,clock:true,loop:bagLoop,rate:bagRate,startOffset});
       setBagRunning(!!res?.running);
       setBagPaused(false);
       if(Number.isFinite(res?.offset))setBagOffset(res.offset);
@@ -2580,10 +2687,10 @@ export default function Nav2MapEditor() {
   },[bagPath,bagLoop,bagRate,bagOffset,bagDuration]);
 
   const stopBag=useCallback(async()=>{
-    if(!isElectron||!window.electronAPI?.rosbagStop)return;
+    if(!hostAPI?.rosbagStop)return;
     setBagBusy(true);
     try{
-      await window.electronAPI.rosbagStop();
+      await hostAPI.rosbagStop();
       setBagRunning(false);
       setBagPaused(false);
       setStatus("■ bag 재생 중지");
@@ -2595,10 +2702,10 @@ export default function Nav2MapEditor() {
   },[]);
 
   const pauseBag=useCallback(async()=>{
-    if(!isElectron||!window.electronAPI?.rosbagPause)return;
+    if(!hostAPI?.rosbagPause)return;
     setBagBusy(true);
     try{
-      const res=await window.electronAPI.rosbagPause();
+      const res=await hostAPI.rosbagPause();
       setBagPaused(!!res?.paused);
       if(Number.isFinite(res?.offset))setBagOffset(res.offset);
       setStatus(`⏸ bag 일시정지 @ ${Math.round(res?.offset||bagOffset)}s`);
@@ -2607,10 +2714,10 @@ export default function Nav2MapEditor() {
   },[bagOffset]);
 
   const resumeBag=useCallback(async()=>{
-    if(!isElectron||!window.electronAPI?.rosbagResume)return;
+    if(!hostAPI?.rosbagResume)return;
     setBagBusy(true);
     try{
-      const res=await window.electronAPI.rosbagResume();
+      const res=await hostAPI.rosbagResume();
       setBagPaused(!!res?.paused);
       if(Number.isFinite(res?.offset))setBagOffset(res.offset);
       setStatus(`▶ bag 재개 @ ${Math.round(res?.offset||bagOffset)}s`);
@@ -2623,10 +2730,10 @@ export default function Nav2MapEditor() {
     const next=Math.max(0,Math.min(max,Number(nextOffset)||0));
     setBagOffset(next);
     if(!bagRunning)return;
-    if(!isElectron||!window.electronAPI?.rosbagSeek)return;
+    if(!hostAPI?.rosbagSeek)return;
     setBagBusy(true);
     try{
-      const res=await window.electronAPI.rosbagSeek({offset:next,loop:bagLoop,rate:bagRate,clock:true});
+      const res=await hostAPI.rosbagSeek({offset:next,loop:bagLoop,rate:bagRate,clock:true});
       setBagRunning(!!res?.running);
       setBagPaused(false);
       if(Number.isFinite(res?.offset))setBagOffset(res.offset);
@@ -2709,20 +2816,21 @@ export default function Nav2MapEditor() {
 
   const saveAll=async ()=>{
     const c=canvasRef.current;if(!c)return;
-    if(isElectron){
-      const dirPath = await window.electronAPI.saveFileDialog({
+    if(hasHostAPI){
+      const dirPath = await hostAPI.saveFileDialog({
         defaultPath: meta.filename,
         filters: [{ name: "PGM", extensions: ["pgm"] }],
       });
       if(!dirPath) return;
-      const dir = dirPath.substring(0, dirPath.lastIndexOf("/"));
+      const slashIdx = dirPath.lastIndexOf("/");
+      const dir = slashIdx >= 0 ? dirPath.substring(0, slashIdx) : ".";
       const baseName = dirPath.split("/").pop().replace(".pgm","");
 
       const imgData=c.getContext("2d").getImageData(0,0,c.width,c.height);
       const gray=new Uint8Array(c.width*c.height);for(let i=0;i<gray.length;i++)gray[i]=imgData.data[i*4];
-      await window.electronAPI.writeFile(dirPath.endsWith(".pgm")?dirPath:`${dir}/${baseName}.pgm`, writePGM(c.width,c.height,gray), null);
-      await window.electronAPI.writeFile(`${dir}/${baseName}.yaml`, writeYAML(meta,baseName), "utf-8");
-      await window.electronAPI.writeFile(`${dir}/${baseName}_semantic.json`, buildSemanticJSON(), "utf-8");
+      await hostAPI.writeFile(dirPath.endsWith(".pgm")?dirPath:`${dir}/${baseName}.pgm`, writePGM(c.width,c.height,gray), null);
+      await hostAPI.writeFile(`${dir}/${baseName}.yaml`, writeYAML(meta,baseName), "utf-8");
+      await hostAPI.writeFile(`${dir}/${baseName}_semantic.json`, buildSemanticJSON(), "utf-8");
       setStatus(`💾 저장 완료: ${baseName}.pgm · .yaml · _semantic.json`);
     } else {
       await savePGM();
@@ -2755,7 +2863,7 @@ export default function Nav2MapEditor() {
     semPoint:"클릭으로 포인트 객체 배치",semGoal:"클릭+드래그로 방향 지정 · 방/대상은 선택 또는 자동 배정",semSelect:"클릭 선택 · 드래그 이동 · Backspace/Del 삭제",
   };
 
-  const onOpenClick = isElectron ? handleNativeOpen : undefined;
+  const onOpenClick = hasHostAPI ? handleNativeOpen : undefined;
 
   return(
     <div style={{display:"flex",flexDirection:"column",height:"100vh",background:"#050d1a",color:"#8eb8c8",fontFamily:"'JetBrains Mono','Fira Code',monospace",fontSize:12,overflow:"hidden"}}>
@@ -2766,7 +2874,7 @@ export default function Nav2MapEditor() {
           <span style={{color:"#00d4ff",fontSize:14}}>◈</span>
           <span style={{color:"#c9fffe",fontWeight:"bold",letterSpacing:1,marginRight:6}}>NAV2 MAP EDITOR</span>
           <div style={{width:1,height:16,background:"rgba(0,212,255,0.15)"}}/>
-          {isElectron ? (
+          {hasHostAPI ? (
             <button style={btn()} onClick={onOpenClick}>📂 열기</button>
           ) : (
             <label style={{...btn(),cursor:"pointer"}}>📂 열기<input type="file" accept=".pgm,.yaml,.yml,.json" multiple onChange={handleFiles} style={{display:"none"}}/></label>
@@ -2784,7 +2892,7 @@ export default function Nav2MapEditor() {
           <div style={{flex:"1 1 180px"}}/>
           <div style={{display:"flex",alignItems:"center",gap:5,marginLeft:"auto",flexWrap:"wrap",justifyContent:"flex-end"}}>
             <button style={btn(showSemPanel)} onClick={()=>setShowSemPanel(v=>!v)}>🗺 시맨틱{(maps.length+rooms.length+carriers.length+objects.length+goals.length+waypoints.length+(startPose?1:0))>0&&` (${maps.length+rooms.length+carriers.length+objects.length+goals.length+waypoints.length+(startPose?1:0)})`}</button>
-            {isElectron ? (
+            {hasHostAPI ? (
               <button style={btn()} onClick={handleSemanticOpen}>📥 시맨틱</button>
             ) : (
               <label style={{...btn(),cursor:"pointer"}}>📥 시맨틱<input type="file" accept=".json" onChange={handleSemanticFile} style={{display:"none"}}/></label>
@@ -2805,7 +2913,7 @@ export default function Nav2MapEditor() {
 
         <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap",paddingTop:2,borderTop:"1px solid rgba(0,212,255,0.06)"}}>
           <span style={{fontSize:10,color:"rgba(0,212,255,0.38)",letterSpacing:1,marginRight:2}}>ROS2</span>
-          {isElectron&&(
+          {hasHostAPI&&(
             rosbridgeRunning?(
               <button style={btn(false,true)} onClick={stopRosbridge} disabled={rosbridgeBusy}>■ Bridge</button>
             ):(
@@ -2816,7 +2924,7 @@ export default function Nav2MapEditor() {
           <button style={{...btn(),opacity:mapLoaded&&ros2State===ROS2_STATES.CONNECTED?1:.45}} onClick={()=>captureRobotPose("waypoint")} disabled={!mapLoaded||ros2State!==ROS2_STATES.CONNECTED}>◎ 현재→WP</button>
           <button style={{...btn(),opacity:mapLoaded&&ros2State===ROS2_STATES.CONNECTED?1:.45}} onClick={()=>captureRobotPose("goal")} disabled={!mapLoaded||ros2State!==ROS2_STATES.CONNECTED}>🎯 현재→골</button>
           <button style={{...btn(),opacity:startPose&&ros2State===ROS2_STATES.CONNECTED?1:.4}} onClick={publishInitialPose} disabled={!startPose||ros2State!==ROS2_STATES.CONNECTED}>📡 시작점 전송</button>
-          {isElectron&&(
+          {hasHostAPI&&(
             <>
               <div style={{width:1,height:16,background:"rgba(0,212,255,0.12)",margin:"0 2px"}}/>
               <button style={btn(!!bagPath)} onClick={chooseBagPath} title={bagPath||"ROS2 bag 폴더 선택"}>🎞 {bagPath?basenameFromPath(bagPath):"Bag"}</button>
@@ -2968,7 +3076,7 @@ export default function Nav2MapEditor() {
               <div style={{fontSize:13,letterSpacing:2,color:"rgba(0,212,255,0.35)"}}>NAV2 MAP EDITOR</div>
               <div style={{fontSize:10,color:"rgba(0,212,255,0.2)",marginBottom:6}}>3계층 시맨틱 맵 (방 → 캐리어 → 객체)</div>
               <div style={{display:"flex",gap:10}}>
-                {isElectron ? (
+                {hasHostAPI ? (
                   <button style={{...btn(true),fontSize:12,padding:"8px 18px"}} onClick={onOpenClick}>📂 PGM/YAML 열기</button>
                 ) : (
                   <label style={{...btn(true),fontSize:12,padding:"8px 18px",cursor:"pointer"}}>📂 PGM/YAML 열기<input type="file" accept=".pgm,.yaml,.yml,.json" multiple onChange={handleFiles} style={{display:"none"}}/></label>
@@ -3053,7 +3161,7 @@ export default function Nav2MapEditor() {
           <CatalogPanel
             catalog={semanticCatalog}
             sources={catalogSources}
-            isElectron={isElectron}
+            hasHostAPI={hasHostAPI}
             onImport={handleCatalogOpen}
             onFileImport={handleCatalogFiles}
             onRemoveSource={removeCatalogSource}
@@ -3064,7 +3172,7 @@ export default function Nav2MapEditor() {
 
         {/* ── ROS2 PANEL ── */}
         {showRos2Panel&&(
-          <Ros2Panel bridge={ros2Bridge} onVisChange={setRos2Vis}
+          <Ros2Panel bridge={ros2Bridge} defaultUrl={defaultRosbridgeUrl(9090)} onVisChange={setRos2Vis}
             frames={ros2Frames} onFramesChange={setRos2Frames} availableFrames={ros2AvailFrames}
             stats={ros2Stats} meta={meta} canvasSize={canvasSize} cameraDataUrl={cameraDataUrl}/>
         )}
@@ -3089,7 +3197,7 @@ export default function Nav2MapEditor() {
               else if(layer==="goal") setGoals(p=>p.map(g=>g.id===id?{...g,[field]:value}:g));
             }}
             setWaypoints={setWaypoints}
-            onImportJSON={isElectron?handleSemanticOpen:null}
+            onImportJSON={hasHostAPI?handleSemanticOpen:null}
             onExportJSON={async()=>await nativeSave(`${meta.filename}_semantic.json`,[{name:"JSON",extensions:["json"]}],buildSemanticJSON(),"utf-8")}
             toWorld={toWorld} resolution={meta.resolution}
             typeOptions={typeOptions}
