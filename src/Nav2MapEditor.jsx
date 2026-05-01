@@ -82,6 +82,9 @@ function createRobotBackendAPI(baseUrl) {
     rosbridgeStart: (options) => post("/api/rosbridge/start", options),
     rosbridgeStop: () => post("/api/rosbridge/stop"),
     rosbridgeStatus: () => get("/api/rosbridge/status"),
+    slamStart: (options) => post("/api/slam/start", options),
+    slamStop: () => post("/api/slam/stop"),
+    slamStatus: () => get("/api/slam/status"),
     rosbagPlay: (options) => post("/api/rosbag/play", options),
     rosbagInfo: (bagPath) => post("/api/rosbag/info", { path: bagPath }),
     rosbagStop: () => post("/api/rosbag/stop"),
@@ -557,6 +560,106 @@ const DRAW_COLORS=[
   {val:PX_FREE,css:"#f8f8f8",border:"#aaa",label:"자유공간"},
   {val:PX_UNKNOWN,css:"#cdcdcd",border:"#888",label:"미지공간"},
 ];
+const MAP_EDIT_TOOLS = new Set(EDIT_TOOLS.map(t=>t.id));
+
+function normalizeOccupancyValue(value){
+  const n=Number(value);
+  if(!Number.isFinite(n))return -1;
+  return n>127?n-256:n;
+}
+function occupancyToGray(value){
+  const v=normalizeOccupancyValue(value);
+  if(v<0)return PX_UNKNOWN;
+  if(v<=0)return PX_FREE;
+  if(v>=100)return PX_OCCUPIED;
+  return Math.max(PX_OCCUPIED,Math.min(PX_FREE,Math.round(PX_FREE-(v/100)*PX_FREE)));
+}
+function decodeOccupancyData(data){
+  if(!data)return [];
+  if(typeof data==="string"){
+    const bin=atob(data);
+    const out=new Int16Array(bin.length);
+    for(let i=0;i<bin.length;i++)out[i]=normalizeOccupancyValue(bin.charCodeAt(i));
+    return out;
+  }
+  if(Array.isArray(data))return data;
+  if(ArrayBuffer.isView(data))return data;
+  if(data instanceof ArrayBuffer)return new Int8Array(data);
+  return [];
+}
+function occupancyGridProjection(msg){
+  const info=msg?.info||{};
+  const width=Math.max(0,Math.floor(Number(info.width)||0));
+  const height=Math.max(0,Math.floor(Number(info.height)||0));
+  const resolution=finiteNumber(info.resolution,0.05);
+  const originPose=info.origin||{};
+  const pos=originPose.position||{};
+  const origin=[
+    finiteNumber(pos.x,0),
+    finiteNumber(pos.y,0),
+    yawFromOrientation(originPose.orientation)||0,
+  ];
+  return {width,height,resolution,origin,frameId:msg?.header?.frame_id||"map"};
+}
+function drawOccupancyGridToCanvas(canvas,msg){
+  const projection=occupancyGridProjection(msg);
+  const {width,height}=projection;
+  if(!canvas||!width||!height)throw new Error("invalid occupancy grid size");
+  const data=decodeOccupancyData(msg?.data);
+  if(data.length<width*height)throw new Error(`occupancy grid data too short: ${data.length}/${width*height}`);
+  if(canvas.width!==width)canvas.width=width;
+  if(canvas.height!==height)canvas.height=height;
+  const ctx=canvas.getContext("2d");
+  const img=ctx.createImageData(width,height);
+  for(let y=0;y<height;y++){
+    const py=height-1-y;
+    for(let x=0;x<width;x++){
+      const gray=occupancyToGray(data[y*width+x]);
+      const dst=(py*width+x)*4;
+      img.data[dst]=gray;
+      img.data[dst+1]=gray;
+      img.data[dst+2]=gray;
+      img.data[dst+3]=255;
+    }
+  }
+  ctx.putImageData(img,0,0);
+  return projection;
+}
+function sameMapProjection(aMeta,aSize,bMeta,bSize){
+  if(!aMeta||!bMeta||!aSize||!bSize)return false;
+  const ao=aMeta.origin||[],bo=bMeta.origin||[];
+  return aSize.w===bSize.w&&aSize.h===bSize.h
+    &&Math.abs((aMeta.resolution||0)-(bMeta.resolution||0))<1e-9
+    &&Math.abs((ao[0]||0)-(bo[0]||0))<1e-9
+    &&Math.abs((ao[1]||0)-(bo[1]||0))<1e-9
+    &&Math.abs((ao[2]||0)-(bo[2]||0))<1e-9;
+}
+function reprojectPixelPoint(p,fromMeta,fromSize,toMeta,toSize){
+  if(!p||!fromSize?.h||!toSize?.h)return p;
+  const w=pixelToWorld(p.x,p.y,fromMeta.origin,fromMeta.resolution,fromSize.h);
+  const px=worldToPixel(w.x,w.y,toMeta.origin,toMeta.resolution,toSize.h);
+  return {x:Math.round(px.x),y:Math.round(px.y)};
+}
+function reprojectShapeItem(item,fromMeta,fromSize,toMeta,toSize){
+  if(!item)return item;
+  if(item.point||item.x!=null&&item.y!=null&&item.w==null&&!item.poly){
+    return {...item,...reprojectPixelPoint(item,fromMeta,fromSize,toMeta,toSize)};
+  }
+  if(item.poly){
+    return {...item,poly:item.poly.map(p=>reprojectPixelPoint(p,fromMeta,fromSize,toMeta,toSize))};
+  }
+  if(item.w!=null){
+    return {
+      ...item,
+      poly:rectToPoly(item.x,item.y,item.w,item.h).map(p=>reprojectPixelPoint(p,fromMeta,fromSize,toMeta,toSize)),
+    };
+  }
+  return item;
+}
+function reprojectPoseItem(item,fromMeta,fromSize,toMeta,toSize){
+  if(!item)return item;
+  return {...item,...reprojectPixelPoint(item,fromMeta,fromSize,toMeta,toSize)};
+}
 
 // ─── Semantic type dialog ──────────────────────────────────────────────────────
 function SemanticDialog({mode, typeOptions, onConfirm, onCancel}) {
@@ -1364,6 +1467,118 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,se
   );
 }
 
+function SlamModePanel({
+  hasHostAPI,
+  ros2Connected,
+  rosbridgeRunning,
+  rosbridgeBusy,
+  onStartBridge,
+  slamMode,
+  onEnterMode,
+  onExitMode,
+  slamRunning,
+  slamBusy,
+  onStartSlam,
+  onStopSlam,
+  slamMapTopic,
+  onChangeMapTopic,
+  slamUseSimTime,
+  onChangeUseSimTime,
+  slamParamsFile,
+  onChangeParamsFile,
+  slamMapStats,
+  onPickGoalTool,
+  onPickSelectTool,
+}) {
+  const mapOk=!!slamMapStats?.width;
+  return (
+    <div style={{width:300,background:"#071121",borderLeft:"1px solid rgba(0,212,255,0.12)",display:"flex",flexDirection:"column",flexShrink:0}}>
+      <div style={{padding:"9px 14px",borderBottom:"1px solid rgba(0,212,255,0.12)",display:"flex",alignItems:"center",gap:8}}>
+        <span style={{color:"#00d4ff",fontWeight:"bold",letterSpacing:1,fontSize:12}}>SLAM 모드</span>
+        <span style={{marginLeft:"auto",fontSize:9,color:slamMode?"#00e676":"rgba(0,212,255,0.35)"}}>{slamMode?"ACTIVE":"STANDBY"}</span>
+      </div>
+      <div style={{padding:10,display:"flex",flexDirection:"column",gap:9,overflow:"auto"}}>
+        <div style={{padding:9,borderRadius:6,background:"rgba(0,0,0,0.24)",border:"1px solid rgba(0,212,255,0.08)",display:"flex",flexDirection:"column",gap:7}}>
+          <div style={{fontSize:10,color:"rgba(0,212,255,0.5)",letterSpacing:1}}>MODE</div>
+          <div style={{display:"flex",gap:6}}>
+            {slamMode?(
+              <button style={{...btn(false,true),flex:1,justifyContent:"center"}} onClick={onExitMode}>종료</button>
+            ):(
+              <button style={{...btn(true),flex:1,justifyContent:"center"}} onClick={onEnterMode}>SLAM 모드 열기</button>
+            )}
+          </div>
+          <div style={{fontSize:10,color:"rgba(0,212,255,0.34)",lineHeight:1.6}}>
+            live /map은 배경으로만 갱신되고, 시맨틱 항목은 map frame 위치를 유지합니다.
+          </div>
+        </div>
+
+        <div style={{padding:9,borderRadius:6,background:"rgba(0,0,0,0.24)",border:"1px solid rgba(0,212,255,0.08)",display:"flex",flexDirection:"column",gap:7}}>
+          <div style={{fontSize:10,color:"rgba(0,212,255,0.5)",letterSpacing:1}}>ROS</div>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            <span style={{width:7,height:7,borderRadius:"50%",background:ros2Connected?"#00e676":"#ff5252",boxShadow:`0 0 5px ${ros2Connected?"#00e676":"#ff5252"}`}}/>
+            <span style={{fontSize:10,color:ros2Connected?"#00e676":"#ff6680"}}>{ros2Connected?"rosbridge connected":"rosbridge disconnected"}</span>
+            {hasHostAPI&&!rosbridgeRunning&&(
+              <button style={{...btn(),marginLeft:"auto",padding:"2px 7px",fontSize:10,opacity:rosbridgeBusy ? .45 : 1}} onClick={onStartBridge} disabled={rosbridgeBusy}>Bridge</button>
+            )}
+          </div>
+          <label style={{display:"flex",flexDirection:"column",gap:4}}>
+            <span style={{fontSize:10,color:"rgba(0,212,255,0.45)"}}>Map topic</span>
+            <input value={slamMapTopic} onChange={e=>onChangeMapTopic(e.target.value)} disabled={slamMode}
+              style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:11,opacity:slamMode ? .55 : 1}}/>
+          </label>
+        </div>
+
+        <div style={{padding:9,borderRadius:6,background:"rgba(0,0,0,0.24)",border:"1px solid rgba(0,212,255,0.08)",display:"flex",flexDirection:"column",gap:7}}>
+          <div style={{fontSize:10,color:"rgba(0,212,255,0.5)",letterSpacing:1}}>SLAM TOOLBOX</div>
+          <label style={{display:"flex",alignItems:"center",gap:6,color:"#8eb8c8",fontSize:10}}>
+            <input type="checkbox" checked={slamUseSimTime} onChange={e=>onChangeUseSimTime(e.target.checked)} style={{width:12,height:12,accentColor:"#00d4ff"}}/>
+            use_sim_time
+          </label>
+          <label style={{display:"flex",flexDirection:"column",gap:4}}>
+            <span style={{fontSize:10,color:"rgba(0,212,255,0.45)"}}>params file</span>
+            <input value={slamParamsFile} onChange={e=>onChangeParamsFile(e.target.value)} placeholder="optional"
+              style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:11}}/>
+          </label>
+          <div style={{display:"flex",gap:6}}>
+            {slamRunning?(
+              <button style={{...btn(false,true),flex:1,justifyContent:"center",opacity:slamBusy ? .45 : 1}} onClick={onStopSlam} disabled={slamBusy}>■ toolbox</button>
+            ):(
+              <button style={{...btn(),flex:1,justifyContent:"center",opacity:hasHostAPI&&!slamBusy?1:.45}} onClick={onStartSlam} disabled={!hasHostAPI||slamBusy}>▶ toolbox</button>
+            )}
+          </div>
+          {!hasHostAPI&&(
+            <div style={{fontSize:10,color:"rgba(255,102,128,0.55)",lineHeight:1.5}}>브라우저 단독 실행에서는 SLAM 프로세스 제어를 할 수 없습니다.</div>
+          )}
+        </div>
+
+        <div style={{padding:9,borderRadius:6,background:"rgba(0,0,0,0.24)",border:`1px solid ${mapOk?"rgba(0,230,118,0.18)":"rgba(255,102,128,0.14)"}`,display:"flex",flexDirection:"column",gap:5}}>
+          <div style={{fontSize:10,color:mapOk?"#00e676":"#ff6680",letterSpacing:1}}>LIVE MAP</div>
+          {mapOk?(
+            <>
+              <div style={{fontSize:11,color:"#c9fffe"}}>{slamMapStats.width}×{slamMapStats.height} @ {slamMapStats.resolution}m/px</div>
+              <div style={{fontSize:9,color:"rgba(0,212,255,0.38)"}}>origin [{slamMapStats.origin.map(v=>Number(v).toFixed(3)).join(", ")}]</div>
+              <div style={{fontSize:9,color:"rgba(0,212,255,0.28)"}}>{slamMapStats.frameId} · {new Date(slamMapStats.receivedAt).toLocaleTimeString()}</div>
+            </>
+          ):(
+            <div style={{fontSize:10,color:"rgba(255,102,128,0.48)",lineHeight:1.5}}>{slamMode?`${slamMapTopic} 수신 대기 중`:"SLAM 모드를 열면 map topic을 구독합니다"}</div>
+          )}
+        </div>
+
+        <div style={{padding:9,borderRadius:6,background:"rgba(0,0,0,0.24)",border:"1px solid rgba(255,102,128,0.12)",display:"flex",flexDirection:"column",gap:7}}>
+          <div style={{fontSize:10,color:"rgba(255,102,128,0.72)",letterSpacing:1}}>ANNOTATION</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+            <button style={{...btn(true),justifyContent:"center",borderColor:"#ff6680",color:"#ff6680"}} onClick={onPickGoalTool}>🎯 골 찍기</button>
+            <button style={{...btn(),justifyContent:"center"}} onClick={onPickSelectTool}>↖ 선택</button>
+          </div>
+          <div style={{fontSize:10,color:"rgba(0,212,255,0.34)",lineHeight:1.6}}>
+            SLAM 모드에서는 브러시/지우개 같은 맵 픽셀 편집 도구가 잠깁니다.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Polygon drawing overlay renderer ─────────────────────────────────────────
 function drawPolygonItem(ctx, shape, rt, isSel, alpha, showLabel=false) {
   const poly = shapeToPoly(shape);
@@ -1457,6 +1672,14 @@ export default function Nav2MapEditor() {
   const [ros2AvailFrames, setRos2AvailFrames] = useState([]);
   const [rosbridgeRunning, setRosbridgeRunning] = useState(false);
   const [rosbridgeBusy, setRosbridgeBusy] = useState(false);
+  const [showSlamPanel, setShowSlamPanel] = useState(false);
+  const [slamMode, setSlamMode] = useState(false);
+  const [slamRunning, setSlamRunning] = useState(false);
+  const [slamBusy, setSlamBusy] = useState(false);
+  const [slamMapTopic, setSlamMapTopic] = useState("/map");
+  const [slamMapStats, setSlamMapStats] = useState(null);
+  const [slamUseSimTime, setSlamUseSimTime] = useState(false);
+  const [slamParamsFile, setSlamParamsFile] = useState("");
   const [show3DView, setShow3DView] = useState(false);
   const [view3DMode, setView3DMode] = useState("free");
   const [view3DWidth, setView3DWidth] = useState(460);
@@ -1520,6 +1743,12 @@ export default function Nav2MapEditor() {
   const rotRef      = useRef(0);
   const polyVertsRef= useRef([]);
   const cursorCanvasRef = useRef({x:0,y:0});
+  const metaRef     = useRef(meta);
+  const canvasSizeRef = useRef(canvasSize);
+  const mapLoadedRef = useRef(mapLoaded);
+  const slamReprojectingRef = useRef(false);
+  const slamHadMapRef = useRef(false);
+  const slamLastStatusAtRef = useRef(0);
 
   // Drag-move refs
   const dragRef     = useRef(null); // {id, layer:'room'|'carrier'|'object', startPt:{x,y}}
@@ -1532,6 +1761,9 @@ export default function Nav2MapEditor() {
   useEffect(()=>{panRef.current=pan;},[pan]);
   useEffect(()=>{rotRef.current=rotation;},[rotation]);
   useEffect(()=>{polyVertsRef.current=polyVerts;},[polyVerts]);
+  useEffect(()=>{metaRef.current=meta;},[meta]);
+  useEffect(()=>{canvasSizeRef.current=canvasSize;},[canvasSize]);
+  useEffect(()=>{mapLoadedRef.current=mapLoaded;},[mapLoaded]);
 
   // Screen coords → canvas coords (accounts for pan, zoom, rotation)
   const screenToCanvas = useCallback((sx, sy)=>{
@@ -1587,6 +1819,7 @@ export default function Nav2MapEditor() {
   const semVersionRef=useRef(0);
   useEffect(()=>{
     if(undoingRef.current){undoingRef.current=false;return;}
+    if(slamReprojectingRef.current){slamReprojectingRef.current=false;return;}
     if(draggingRef.current)return; // skip during drag-move
     // Skip initial mount (saveSnap is called in initCanvas/loadPGMData)
     if(semVersionRef.current===0){semVersionRef.current=1;return;}
@@ -1625,6 +1858,69 @@ export default function Nav2MapEditor() {
   );
   const drawOverlayRef = useRef(null);
 
+  const reprojectSemanticForMap = useCallback((fromMeta, fromSize, toMeta, toSize)=>{
+    if(!fromMeta||!toMeta||!fromSize?.h||!toSize?.h)return;
+    if(sameMapProjection(fromMeta,fromSize,toMeta,toSize))return;
+    const hasSemantic=mapsRef.current.length||roomsRef.current.length||carriersRef.current.length||objectsRef.current.length||goalsRef.current.length||waypointsRef.current.length||startPoseRef.current;
+    if(!hasSemantic)return;
+    slamReprojectingRef.current=true;
+    setMaps(p=>p.map(item=>reprojectShapeItem(item,fromMeta,fromSize,toMeta,toSize)));
+    setRooms(p=>p.map(item=>reprojectShapeItem(item,fromMeta,fromSize,toMeta,toSize)));
+    setCarriers(p=>p.map(item=>reprojectShapeItem(item,fromMeta,fromSize,toMeta,toSize)));
+    setObjects(p=>p.map(item=>reprojectShapeItem(item,fromMeta,fromSize,toMeta,toSize)));
+    setWaypoints(p=>p.map(item=>reprojectPoseItem(item,fromMeta,fromSize,toMeta,toSize)));
+    setGoals(p=>p.map(item=>reprojectPoseItem(item,fromMeta,fromSize,toMeta,toSize)));
+    setStartPose(p=>p?reprojectPoseItem(p,fromMeta,fromSize,toMeta,toSize):p);
+  },[]);
+
+  const applySlamMapMessage = useCallback((msg)=>{
+    const c=canvasRef.current;
+    if(!c)return;
+    const oldMeta={...metaRef.current,origin:[...(metaRef.current.origin||[0,0,0])]};
+    const oldSize={...canvasSizeRef.current};
+    const hadMap=mapLoadedRef.current&&oldSize.w>0&&oldSize.h>0;
+    let projection;
+    try{
+      projection=drawOccupancyGridToCanvas(c,msg);
+    }catch(e){
+      setStatus(`⚠ SLAM map 처리 실패: ${e.message}`);
+      return;
+    }
+    const nextMeta={...oldMeta,resolution:projection.resolution,origin:projection.origin,filename:oldMeta.filename==="map"?"slam_live_map":oldMeta.filename};
+    const nextSize={w:projection.width,h:projection.height};
+    const projectionChanged=!sameMapProjection(oldMeta,oldSize,nextMeta,nextSize);
+    if(hadMap&&projectionChanged)reprojectSemanticForMap(oldMeta,oldSize,nextMeta,nextSize);
+    if(!hadMap||projectionChanged){
+      setMeta(nextMeta);
+      setCanvasSize(nextSize);
+    }
+    setMapLoaded(true);
+    setSlamMapStats({...projection,receivedAt:Date.now(),topic:slamMapTopic});
+    if(!slamHadMapRef.current){
+      slamHadMapRef.current=true;
+      const vp=vpRef.current;
+      if(vp){
+        const z=Math.min((vp.clientWidth-60)/projection.width,(vp.clientHeight-60)/projection.height,3);
+        setZoom(z);setPan({x:(vp.clientWidth-projection.width*z)/2,y:(vp.clientHeight-projection.height*z)/2});setRotation(0);
+      }
+    }
+    const now=Date.now();
+    if(now-slamLastStatusAtRef.current>1500){
+      slamLastStatusAtRef.current=now;
+      setStatus(`SLAM live map 수신: ${projection.width}×${projection.height} (${slamMapTopic})`);
+    }
+    drawOverlayRef.current?.();
+  },[reprojectSemanticForMap,slamMapTopic]);
+
+  useEffect(()=>{
+    if(!slamMode||ros2State!==ROS2_STATES.CONNECTED)return;
+    const topic=slamMapTopic.trim()||"/map";
+    slamHadMapRef.current=false;
+    const unsub=ros2Bridge.subscribe(topic,"nav_msgs/msg/OccupancyGrid",applySlamMapMessage,250,{queue_length:1});
+    setStatus(`SLAM 모드: ${topic} 구독 중 · 시맨틱 골을 찍을 수 있습니다`);
+    return()=>unsub();
+  },[slamMode,ros2State,ros2Bridge,slamMapTopic,applySlamMapMessage]);
+
   useEffect(()=>{
     if(!hostAPI?.rosbridgeStatus)return;
     let alive=true;
@@ -1632,6 +1928,20 @@ export default function Nav2MapEditor() {
       try{
         const st=await hostAPI.rosbridgeStatus();
         if(alive)setRosbridgeRunning(!!st?.running);
+      }catch(e){/* ignore */}
+    };
+    sync();
+    const timer=setInterval(sync,1000);
+    return()=>{alive=false;clearInterval(timer);};
+  },[]);
+
+  useEffect(()=>{
+    if(!hostAPI?.slamStatus)return;
+    let alive=true;
+    const sync=async()=>{
+      try{
+        const st=await hostAPI.slamStatus();
+        if(alive)setSlamRunning(!!st?.running);
       }catch(e){/* ignore */}
     };
     sync();
@@ -2030,11 +2340,15 @@ export default function Nav2MapEditor() {
       }
       return;
     }
+    if(slamMode&&MAP_EDIT_TOOLS.has(tool)){
+      setStatus("SLAM 모드에서는 live map 픽셀 편집이 잠겨 있습니다. 시맨틱 도구를 사용하세요");
+      return;
+    }
     if(tool==="fill"){ if(!inBounds(pt))return;const c=canvasRef.current;const ctx=c.getContext("2d");const id=ctx.getImageData(0,0,c.width,c.height);floodFill(id.data,c.width,c.height,pt.x,pt.y,drawColor);ctx.putImageData(id,0,0);saveSnap();return; }
     isDrawing.current=true;shapeStart.current=pt;lastPt.current=pt;
     if(["line","rect","circle"].includes(tool)){const c=canvasRef.current;snapRef.current=c.getContext("2d").getImageData(0,0,c.width,c.height);}
     if((tool==="brush"||tool==="eraser")&&inBounds(pt)){const c=canvasRef.current;paintDot(c.getContext("2d"),pt.x,pt.y,tool==="eraser"?brushSz*2:brushSz,tool==="eraser"?PX_FREE:drawColor);}
-  },[tool,drawColor,brushSz,toXY,saveSnap,finishPolygon,maps,rooms,carriers,objects,startPose,waypoints,goals,mapLoaded]);
+  },[tool,drawColor,brushSz,toXY,saveSnap,finishPolygon,maps,rooms,carriers,objects,startPose,waypoints,goals,mapLoaded,slamMode]);
 
   // ── Double click → close polygon ──
   const onDblClick=useCallback((e)=>{
@@ -2378,12 +2692,18 @@ export default function Nav2MapEditor() {
       if(e.key==="["){rotateMap(e.shiftKey?-90:-15);return;}
       if(e.key==="]"){rotateMap(e.shiftKey?90:15);return;}
       if(!e.ctrlKey&&!e.metaKey){
-        if(em[e.key.toLowerCase()]){setTool(em[e.key.toLowerCase()]);setActiveTab("edit");if(polyVertsRef.current.length>0){setPolyVerts([]);setPolySnap(false);}}
+        if(em[e.key.toLowerCase()]){
+          if(slamMode){
+            setActiveTab("semantic");setTool("semGoal");setStatus("SLAM 모드에서는 맵 픽셀 편집 도구가 잠겨 있습니다");
+          }else{
+            setTool(em[e.key.toLowerCase()]);setActiveTab("edit");if(polyVertsRef.current.length>0){setPolyVerts([]);setPolySnap(false);}
+          }
+        }
         if(sm[e.key.toLowerCase()]||sm[e.key]){setTool(sm[e.key.toLowerCase()]||sm[e.key]);setActiveTab("semantic");}
       }
     };
     window.addEventListener("keydown",onKey);return()=>window.removeEventListener("keydown",onKey);
-  },[undo,redo,selSemId,selWpIdx,tool,finishPolygon,deleteSelected,rotateMap]);
+  },[undo,redo,selSemId,selWpIdx,tool,finishPolygon,deleteSelected,rotateMap,slamMode]);
 
   // ── File I/O (host API + browser fallback) ──
   const loadPGMData=(name, buffer)=>{
@@ -2855,6 +3175,53 @@ export default function Nav2MapEditor() {
     }
   },[ros2Bridge]);
 
+  const enterSlamMode=useCallback(()=>{
+    setSlamMode(true);
+    setShowSlamPanel(true);
+    setShowSemPanel(true);
+    setActiveTab("semantic");
+    setTool("semGoal");
+    setStatus(`SLAM 모드 시작: ${slamMapTopic.trim()||"/map"} live map 위에 시맨틱 골 작성`);
+  },[slamMapTopic]);
+
+  const exitSlamMode=useCallback(()=>{
+    setSlamMode(false);
+    setStatus("SLAM 모드 종료");
+  },[]);
+
+  const startSlamToolbox=useCallback(async()=>{
+    if(!hostAPI?.slamStart){setStatus("⚠ slam_toolbox 실행은 Electron 또는 robot backend에서만 가능합니다");return;}
+    setSlamBusy(true);
+    try{
+      const res=await hostAPI.slamStart({
+        mode:"online_async",
+        useSimTime:slamUseSimTime,
+        paramsFile:slamParamsFile.trim()||"",
+      });
+      setSlamRunning(!!res?.running);
+      enterSlamMode();
+      setStatus(`▶ slam_toolbox 실행${slamUseSimTime?" (sim time)":""}`);
+    }catch(e){
+      setStatus(`⚠ slam_toolbox 실행 실패: ${e.message}`);
+    }finally{
+      setSlamBusy(false);
+    }
+  },[slamUseSimTime,slamParamsFile,enterSlamMode]);
+
+  const stopSlamToolbox=useCallback(async()=>{
+    if(!hostAPI?.slamStop)return;
+    setSlamBusy(true);
+    try{
+      await hostAPI.slamStop();
+      setSlamRunning(false);
+      setStatus("■ slam_toolbox 중지");
+    }catch(e){
+      setStatus(`⚠ slam_toolbox 중지 실패: ${e.message}`);
+    }finally{
+      setSlamBusy(false);
+    }
+  },[]);
+
   const chooseBagPath=useCallback(async()=>{
     if(!hostAPI?.openFileDialog){setStatus("⚠ bag 실행은 Electron 또는 robot backend에서만 가능합니다");return;}
     const selected=await pickHostPath({
@@ -3103,6 +3470,7 @@ export default function Nav2MapEditor() {
             )}
             <button style={btn(showCatalogPanel)} onClick={()=>setShowCatalogPanel(v=>!v)}>📋 MD목록 ({catalogCounts(semanticCatalog).rooms}/{catalogCounts(semanticCatalog).locations}/{catalogCounts(semanticCatalog).objects})</button>
             <button style={btn(showRos2Panel)} onClick={()=>setShowRos2Panel(v=>!v)}>🤖 ROS2{ros2State===ROS2_STATES.CONNECTED&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
+            <button style={btn(showSlamPanel||slamMode)} onClick={()=>setShowSlamPanel(v=>!v)}>🧭 SLAM{slamMode&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
             <button style={btn(show3DView)} onClick={()=>setShow3DView(v=>!v)}>🧊 3D</button>
             {show3DView&&(
               <div style={{display:"flex",gap:4,alignItems:"center",marginLeft:2}}>
@@ -3183,7 +3551,8 @@ export default function Nav2MapEditor() {
         <div style={{width:toolbarW,background:"#060e1c",display:"flex",flexDirection:"column",alignItems:"center",padding:"8px 5px",gap:3,flexShrink:0,overflowY:"auto",position:"relative"}}>
           <div style={{display:"flex",width:"100%",marginBottom:6,gap:2}}>
             {[["edit","✏️ 편집"],["semantic","🗺 시맨틱"]].map(([t,lbl])=>(
-              <button key={t} onClick={()=>setActiveTab(t)} style={{flex:1,border:"none",borderRadius:5,cursor:"pointer",padding:"5px 2px",background:activeTab===t?"rgba(0,212,255,0.18)":"transparent",color:activeTab===t?"#00d4ff":"#4a7080",fontSize:10,fontWeight:activeTab===t?"bold":"normal",transition:"all 0.15s"}}>
+              <button key={t} disabled={slamMode&&t==="edit"} onClick={()=>setActiveTab(t)}
+                style={{flex:1,border:"none",borderRadius:5,cursor:slamMode&&t==="edit"?"not-allowed":"pointer",padding:"5px 2px",background:activeTab===t?"rgba(0,212,255,0.18)":"transparent",color:activeTab===t?"#00d4ff":"#4a7080",fontSize:10,fontWeight:activeTab===t?"bold":"normal",transition:"all 0.15s",opacity:slamMode&&t==="edit" ? .35 : 1}}>
                 {lbl}
               </button>
             ))}
@@ -3379,6 +3748,33 @@ export default function Nav2MapEditor() {
           <Ros2Panel bridge={ros2Bridge} defaultUrl={defaultRosbridgeUrl(9090)} onVisChange={setRos2Vis}
             frames={ros2Frames} onFramesChange={setRos2Frames} availableFrames={ros2AvailFrames}
             stats={ros2Stats} meta={meta} canvasSize={canvasSize} cameraDataUrl={cameraDataUrl}/>
+        )}
+
+        {/* ── SLAM PANEL ── */}
+        {showSlamPanel&&(
+          <SlamModePanel
+            hasHostAPI={hasHostAPI}
+            ros2Connected={ros2State===ROS2_STATES.CONNECTED}
+            rosbridgeRunning={rosbridgeRunning}
+            rosbridgeBusy={rosbridgeBusy}
+            onStartBridge={startRosbridge}
+            slamMode={slamMode}
+            onEnterMode={enterSlamMode}
+            onExitMode={exitSlamMode}
+            slamRunning={slamRunning}
+            slamBusy={slamBusy}
+            onStartSlam={startSlamToolbox}
+            onStopSlam={stopSlamToolbox}
+            slamMapTopic={slamMapTopic}
+            onChangeMapTopic={setSlamMapTopic}
+            slamUseSimTime={slamUseSimTime}
+            onChangeUseSimTime={setSlamUseSimTime}
+            slamParamsFile={slamParamsFile}
+            onChangeParamsFile={setSlamParamsFile}
+            slamMapStats={slamMapStats}
+            onPickGoalTool={()=>{setActiveTab("semantic");setTool("semGoal");setShowSemPanel(true);}}
+            onPickSelectTool={()=>{setActiveTab("semantic");setTool("semSelect");setShowSemPanel(true);}}
+          />
         )}
 
         {/* ── SEMANTIC PANEL (rooms + carriers + objects + waypoints) ── */}

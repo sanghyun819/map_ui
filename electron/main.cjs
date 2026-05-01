@@ -6,6 +6,9 @@ const { spawn } = require("child_process");
 let mainWindow;
 let rosbridgeProcess = null;
 let rosbridgeLastOutput = "";
+let slamProcess = null;
+let slamLastOutput = "";
+let slamOptions = null;
 let bagProcess = null;
 let bagLastOutput = "";
 let bagOptions = null;
@@ -21,6 +24,10 @@ function appendBagOutput(data) {
 
 function appendRosbridgeOutput(data) {
   rosbridgeLastOutput = (rosbridgeLastOutput + data.toString()).slice(-4000);
+}
+
+function appendSlamOutput(data) {
+  slamLastOutput = (slamLastOutput + data.toString()).slice(-4000);
 }
 
 function rosSetupCommand() {
@@ -74,6 +81,44 @@ function startRosbridgeProcess(options = {}) {
     if (rosbridgeProcess?.pid === child.pid) rosbridgeProcess = null;
   });
   return { running: true, pid: child.pid, port, address };
+}
+
+function stopSlamProcess() {
+  if (!slamProcess) return false;
+  const proc = slamProcess;
+  slamProcess = null;
+  return stopProcessGroup(proc);
+}
+
+function startSlamProcess(options = {}) {
+  if (slamProcess) return { running: true, pid: slamProcess.pid, options: slamOptions };
+  slamLastOutput = "";
+
+  const mode = options.mode === "online_sync" ? "online_sync" : "online_async";
+  const launchFile = `${mode}_launch.py`;
+  const useSimTime = options.useSimTime === true || options.use_sim_time === true;
+  const paramsFile = String(options.paramsFile || options.slam_params_file || "").trim();
+  const launchArgs = [`use_sim_time:=${useSimTime ? "true" : "false"}`];
+  if (paramsFile) launchArgs.push('slam_params_file:="$SLAM_PARAMS_FILE"');
+  const cmd = [
+    rosSetupCommand(),
+    `exec ros2 launch slam_toolbox ${launchFile} ${launchArgs.join(" ")}`,
+  ].join("; ");
+
+  const child = spawn("bash", ["-lc", cmd], {
+    env: { ...process.env, SLAM_PARAMS_FILE: paramsFile },
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  slamProcess = child;
+  slamOptions = { mode, useSimTime, paramsFile };
+  child.stdout.on("data", appendSlamOutput);
+  child.stderr.on("data", appendSlamOutput);
+  child.on("close", (code, signal) => {
+    appendSlamOutput(`\n[slam_toolbox exited code=${code} signal=${signal || ""}]\n`);
+    if (slamProcess?.pid === child.pid) slamProcess = null;
+  });
+  return { running: true, pid: child.pid, options: slamOptions };
 }
 
 function readBagInfo(bagPath) {
@@ -188,6 +233,7 @@ app.whenReady().then(createWindow);
 
 app.on("window-all-closed", () => {
   stopRosbridgeProcess();
+  stopSlamProcess();
   stopBagProcess();
   app.quit();
 });
@@ -243,6 +289,20 @@ ipcMain.handle("rosbridge:stop", async () => {
 
 ipcMain.handle("rosbridge:status", async () => {
   return { running: !!rosbridgeProcess, output: rosbridgeLastOutput };
+});
+
+// slam_toolbox launch control.
+ipcMain.handle("slam:start", async (event, options = {}) => {
+  return startSlamProcess(options);
+});
+
+ipcMain.handle("slam:stop", async () => {
+  const stopped = stopSlamProcess();
+  return { running: false, stopped };
+});
+
+ipcMain.handle("slam:status", async () => {
+  return { running: !!slamProcess, output: slamLastOutput, options: slamOptions };
 });
 
 // ROS2 bag playback. Assumes the app was launched with ROS2 environment,

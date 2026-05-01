@@ -11,6 +11,9 @@ const MAX_BODY_BYTES = Number(process.env.MAX_BODY_MB || 256) * 1024 * 1024;
 
 let rosbridgeProcess = null;
 let rosbridgeLastOutput = "";
+let slamProcess = null;
+let slamLastOutput = "";
+let slamOptions = null;
 let bagProcess = null;
 let bagLastOutput = "";
 let bagOptions = null;
@@ -30,6 +33,10 @@ function appendBagOutput(data) {
 
 function appendRosbridgeOutput(data) {
   rosbridgeLastOutput = appendOutput(rosbridgeLastOutput, data);
+}
+
+function appendSlamOutput(data) {
+  slamLastOutput = appendOutput(slamLastOutput, data);
 }
 
 function rosSetupCommand() {
@@ -83,6 +90,44 @@ function startRosbridgeProcess(options = {}) {
     if (rosbridgeProcess?.pid === child.pid) rosbridgeProcess = null;
   });
   return { running: true, pid: child.pid, port, address };
+}
+
+function stopSlamProcess() {
+  if (!slamProcess) return false;
+  const proc = slamProcess;
+  slamProcess = null;
+  return stopProcessGroup(proc);
+}
+
+function startSlamProcess(options = {}) {
+  if (slamProcess) return { running: true, pid: slamProcess.pid, options: slamOptions };
+  slamLastOutput = "";
+
+  const mode = options.mode === "online_sync" ? "online_sync" : "online_async";
+  const launchFile = `${mode}_launch.py`;
+  const useSimTime = options.useSimTime === true || options.use_sim_time === true;
+  const paramsFile = String(options.paramsFile || options.slam_params_file || "").trim();
+  const launchArgs = [`use_sim_time:=${useSimTime ? "true" : "false"}`];
+  if (paramsFile) launchArgs.push('slam_params_file:="$SLAM_PARAMS_FILE"');
+  const cmd = [
+    rosSetupCommand(),
+    `exec ros2 launch slam_toolbox ${launchFile} ${launchArgs.join(" ")}`,
+  ].join("; ");
+
+  const child = spawn("bash", ["-lc", cmd], {
+    env: { ...process.env, SLAM_PARAMS_FILE: paramsFile },
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  slamProcess = child;
+  slamOptions = { mode, useSimTime, paramsFile };
+  child.stdout.on("data", appendSlamOutput);
+  child.stderr.on("data", appendSlamOutput);
+  child.on("close", (code, signal) => {
+    appendSlamOutput(`\n[slam_toolbox exited code=${code} signal=${signal || ""}]\n`);
+    if (slamProcess?.pid === child.pid) slamProcess = null;
+  });
+  return { running: true, pid: child.pid, options: slamOptions };
 }
 
 function readBagInfo(bagPath) {
@@ -261,6 +306,9 @@ const apiRoutes = {
   "POST /api/rosbridge/start": async body => startRosbridgeProcess(body || {}),
   "POST /api/rosbridge/stop": async () => ({ running: false, stopped: stopRosbridgeProcess() }),
   "GET /api/rosbridge/status": async () => ({ running: !!rosbridgeProcess, output: rosbridgeLastOutput }),
+  "POST /api/slam/start": async body => startSlamProcess(body || {}),
+  "POST /api/slam/stop": async () => ({ running: false, stopped: stopSlamProcess() }),
+  "GET /api/slam/status": async () => ({ running: !!slamProcess, output: slamLastOutput, options: slamOptions }),
   "POST /api/rosbag/play": async body => startBagProcess(body || {}),
   "POST /api/rosbag/info": async body => readBagInfo(body.path),
   "POST /api/rosbag/stop": async () => ({ running: false, stopped: stopBagProcess() }),
@@ -362,6 +410,7 @@ const server = http.createServer(async (req, res) => {
 
 function shutdown() {
   stopRosbridgeProcess();
+  stopSlamProcess();
   stopBagProcess();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref();

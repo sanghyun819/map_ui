@@ -17,6 +17,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   rosbridgeStop: () => ipcRenderer.invoke("rosbridge:stop"),
   rosbridgeStatus: () => ipcRenderer.invoke("rosbridge:status"),
 
+  // slam_toolbox
+  slamStart: (options) => ipcRenderer.invoke("slam:start", options),
+  slamStop: () => ipcRenderer.invoke("slam:stop"),
+  slamStatus: () => ipcRenderer.invoke("slam:status"),
+
   // ROS2 bag playback
   rosbagPlay: (options) => ipcRenderer.invoke("rosbag:play", options),
   rosbagInfo: (bagPath) => ipcRenderer.invoke("rosbag:info", bagPath),
