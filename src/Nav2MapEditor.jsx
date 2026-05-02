@@ -85,6 +85,9 @@ function createRobotBackendAPI(baseUrl) {
     slamStart: (options) => post("/api/slam/start", options),
     slamStop: () => post("/api/slam/stop"),
     slamStatus: () => get("/api/slam/status"),
+    nav2Start: (options) => post("/api/nav2/start", options),
+    nav2Stop: () => post("/api/nav2/stop"),
+    nav2Status: () => get("/api/nav2/status"),
     rosbagPlay: (options) => post("/api/rosbag/play", options),
     rosbagInfo: (bagPath) => post("/api/rosbag/info", { path: bagPath }),
     rosbagStop: () => post("/api/rosbag/stop"),
@@ -387,6 +390,12 @@ function parsePGM(buffer) {
   return{width,height,data:new Uint8Array(vals)};
 }
 function writePGM(w,h,gray){const hb=new TextEncoder().encode(`P5\n${w} ${h}\n255\n`);const out=new Uint8Array(hb.length+gray.length);out.set(hb);out.set(gray,hb.length);return out;}
+function canvasToPGM(canvas){
+  const imgData=canvas.getContext("2d").getImageData(0,0,canvas.width,canvas.height);
+  const gray=new Uint8Array(canvas.width*canvas.height);
+  for(let i=0;i<gray.length;i++)gray[i]=imgData.data[i*4];
+  return writePGM(canvas.width,canvas.height,gray);
+}
 function stripYAMLComment(value){
   let quote=null;
   for(let i=0;i<value.length;i++){
@@ -450,6 +459,13 @@ function parseYAML(text){
   return m;
 }
 function writeYAML(meta,fname){return `image: ${fname}.pgm\nresolution: ${meta.resolution}\norigin: [${meta.origin.join(", ")}]\nnegate: ${meta.negate}\noccupied_thresh: ${meta.occupied_thresh}\nfree_thresh: ${meta.free_thresh}\n`;}
+function timestampedMapName(prefix="map"){
+  const d=new Date(),pad=n=>String(n).padStart(2,"0");
+  return `${prefix}_${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+}
+function cleanMapBaseName(name){
+  return String(name||"").trim().replace(/\\/g,"/").split("/").pop().replace(/\.(pgm|yaml|yml|json)$/i,"").replace(/_semantic$/i,"");
+}
 function floodFill(data,W,H,sx,sy,fillV){const target=data[(sy*W+sx)*4];if(target===fillV)return;const stack=[sy*W+sx],vis=new Uint8Array(W*H);while(stack.length){const p=stack.pop(),x=p%W,y=Math.floor(p/W);if(x<0||x>=W||y<0||y>=H||vis[p]||data[p*4]!==target)continue;vis[p]=1;data[p*4]=data[p*4+1]=data[p*4+2]=fillV;stack.push(p+1,p-1,p+W,p-W);}}
 function finiteNumber(v,fallback=null){const n=Number(v);return Number.isFinite(n)?n:fallback;}
 function finitePoint(p){
@@ -1478,8 +1494,33 @@ function SlamModePanel({
   onExitMode,
   slamRunning,
   slamBusy,
+  slamSaveBusy,
   onStartSlam,
   onStopSlam,
+  onSaveSlamResult,
+  nav2Running,
+  nav2Busy,
+  nav2ParamsFile,
+  onChangeNav2ParamsFile,
+  onStartNav2,
+  onStopNav2,
+  slamSaveName,
+  onChangeSaveName,
+  slamShowFootprint,
+  onChangeShowFootprint,
+  slamFootprintTopic,
+  onChangeFootprintTopic,
+  slamShowRobotModel,
+  onChangeShowRobotModel,
+  slamRobotDescriptionTopic,
+  onChangeRobotDescriptionTopic,
+  slamShowCostmaps,
+  onChangeShowCostmaps,
+  slamGlobalCostmapTopic,
+  onChangeGlobalCostmapTopic,
+  slamLocalCostmapTopic,
+  onChangeLocalCostmapTopic,
+  ros2Stats,
   slamMapTopic,
   onChangeMapTopic,
   slamUseSimTime,
@@ -1491,6 +1532,7 @@ function SlamModePanel({
   onPickSelectTool,
 }) {
   const mapOk=!!slamMapStats?.width;
+  const rosStats=ros2Stats?.current||{};
   return (
     <div style={{width:300,background:"#071121",borderLeft:"1px solid rgba(0,212,255,0.12)",display:"flex",flexDirection:"column",flexShrink:0}}>
       <div style={{padding:"9px 14px",borderBottom:"1px solid rgba(0,212,255,0.12)",display:"flex",alignItems:"center",gap:8}}>
@@ -1551,13 +1593,57 @@ function SlamModePanel({
           )}
         </div>
 
+        <div style={{padding:9,borderRadius:6,background:"rgba(0,0,0,0.24)",border:"1px solid rgba(0,212,255,0.08)",display:"flex",flexDirection:"column",gap:7}}>
+          <div style={{fontSize:10,color:"rgba(0,212,255,0.5)",letterSpacing:1}}>ROBOT OVERLAY</div>
+          <div style={{fontSize:10,color:"rgba(0,212,255,0.34)",lineHeight:1.6}}>
+            UI는 Nav2를 실행하지 않고 costmap/footprint/robot_description 토픽만 구독합니다.
+          </div>
+          <label style={{display:"flex",alignItems:"center",gap:6,color:"#8eb8c8",fontSize:10}}>
+            <input type="checkbox" checked={slamShowCostmaps} onChange={e=>onChangeShowCostmaps(e.target.checked)} style={{width:12,height:12,accentColor:"#00d4ff"}}/>
+            nav2 costmaps
+            <span style={{marginLeft:"auto",color:(rosStats.costmapTopicCount||0)>0?"#00e676":"rgba(255,102,128,0.55)",fontSize:9}}>
+              {(rosStats.costmapTopicCount||0)>0?`${rosStats.costmapTopicCount} LIVE`:"WAIT"}
+            </span>
+          </label>
+          <input value={slamGlobalCostmapTopic} onChange={e=>onChangeGlobalCostmapTopic(e.target.value)} disabled={!slamShowCostmaps}
+            style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:11,opacity:slamShowCostmaps?1:.55}}/>
+          <input value={slamLocalCostmapTopic} onChange={e=>onChangeLocalCostmapTopic(e.target.value)} disabled={!slamShowCostmaps}
+            style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:11,opacity:slamShowCostmaps?1:.55}}/>
+          <label style={{display:"flex",alignItems:"center",gap:6,color:"#8eb8c8",fontSize:10}}>
+            <input type="checkbox" checked={slamShowFootprint} onChange={e=>onChangeShowFootprint(e.target.checked)} style={{width:12,height:12,accentColor:"#00d4ff"}}/>
+            footprint
+            <span style={{marginLeft:"auto",color:(rosStats.footprintTopicCount||0)>0?"#00e676":"rgba(255,102,128,0.55)",fontSize:9}}>
+              {(rosStats.footprintTopicCount||0)>0?"LIVE":"WAIT"}
+            </span>
+          </label>
+          <input value={slamFootprintTopic} onChange={e=>onChangeFootprintTopic(e.target.value)} disabled={!slamShowFootprint}
+            style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:11,opacity:slamShowFootprint?1:.55}}/>
+          <label style={{display:"flex",alignItems:"center",gap:6,color:"#8eb8c8",fontSize:10}}>
+            <input type="checkbox" checked={slamShowRobotModel} onChange={e=>onChangeShowRobotModel(e.target.checked)} style={{width:12,height:12,accentColor:"#00d4ff"}}/>
+            robot_description
+            <span style={{marginLeft:"auto",color:(rosStats.robotModelLinkCount||0)>0?"#00e676":"rgba(255,102,128,0.55)",fontSize:9}}>
+              {rosStats.robotModelLinkCount?`${rosStats.robotModelLinkCount} LINKS`:(rosStats.robotDescriptionLoaded?"URDF":"WAIT")}
+            </span>
+          </label>
+          <input value={slamRobotDescriptionTopic} onChange={e=>onChangeRobotDescriptionTopic(e.target.value)} disabled={!slamShowRobotModel}
+            style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:11,opacity:slamShowRobotModel?1:.55}}/>
+        </div>
+
         <div style={{padding:9,borderRadius:6,background:"rgba(0,0,0,0.24)",border:`1px solid ${mapOk?"rgba(0,230,118,0.18)":"rgba(255,102,128,0.14)"}`,display:"flex",flexDirection:"column",gap:5}}>
           <div style={{fontSize:10,color:mapOk?"#00e676":"#ff6680",letterSpacing:1}}>LIVE MAP</div>
+          <label style={{display:"flex",flexDirection:"column",gap:4}}>
+            <span style={{fontSize:10,color:"rgba(0,212,255,0.45)"}}>저장 이름</span>
+            <input value={slamSaveName} onChange={e=>onChangeSaveName(e.target.value)} placeholder="map_MMDD_HHMM"
+              style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:11}}/>
+          </label>
           {mapOk?(
             <>
               <div style={{fontSize:11,color:"#c9fffe"}}>{slamMapStats.width}×{slamMapStats.height} @ {slamMapStats.resolution}m/px</div>
               <div style={{fontSize:9,color:"rgba(0,212,255,0.38)"}}>origin [{slamMapStats.origin.map(v=>Number(v).toFixed(3)).join(", ")}]</div>
               <div style={{fontSize:9,color:"rgba(0,212,255,0.28)"}}>{slamMapStats.frameId} · {new Date(slamMapStats.receivedAt).toLocaleTimeString()}</div>
+              <button style={{...btn(true),justifyContent:"center",marginTop:3,opacity:slamSaveBusy ? .45 : 1}} onClick={onSaveSlamResult} disabled={slamSaveBusy}>
+                {slamSaveBusy?"저장 중":"💾 완료 저장"}
+              </button>
             </>
           ):(
             <div style={{fontSize:10,color:"rgba(255,102,128,0.48)",lineHeight:1.5}}>{slamMode?`${slamMapTopic} 수신 대기 중`:"SLAM 모드를 열면 map topic을 구독합니다"}</div>
@@ -1676,10 +1762,22 @@ export default function Nav2MapEditor() {
   const [slamMode, setSlamMode] = useState(false);
   const [slamRunning, setSlamRunning] = useState(false);
   const [slamBusy, setSlamBusy] = useState(false);
+  const [nav2Running, setNav2Running] = useState(false);
+  const [nav2Busy, setNav2Busy] = useState(false);
+  const [nav2ParamsFile, setNav2ParamsFile] = useState("");
+  const [slamSaveBusy, setSlamSaveBusy] = useState(false);
   const [slamMapTopic, setSlamMapTopic] = useState("/map");
   const [slamMapStats, setSlamMapStats] = useState(null);
   const [slamUseSimTime, setSlamUseSimTime] = useState(false);
   const [slamParamsFile, setSlamParamsFile] = useState("");
+  const [slamSaveName, setSlamSaveName] = useState(()=>timestampedMapName());
+  const [slamShowCostmaps, setSlamShowCostmaps] = useState(true);
+  const [slamGlobalCostmapTopic, setSlamGlobalCostmapTopic] = useState("/global_costmap/costmap");
+  const [slamLocalCostmapTopic, setSlamLocalCostmapTopic] = useState("/local_costmap/costmap");
+  const [slamShowFootprint, setSlamShowFootprint] = useState(true);
+  const [slamFootprintTopic, setSlamFootprintTopic] = useState("/local_costmap/published_footprint");
+  const [slamShowRobotModel, setSlamShowRobotModel] = useState(true);
+  const [slamRobotDescriptionTopic, setSlamRobotDescriptionTopic] = useState("/robot_description");
   const [show3DView, setShow3DView] = useState(false);
   const [view3DMode, setView3DMode] = useState("free");
   const [view3DWidth, setView3DWidth] = useState(460);
@@ -1858,6 +1956,59 @@ export default function Nav2MapEditor() {
   );
   const drawOverlayRef = useRef(null);
 
+  useEffect(()=>{
+    const desired=[];
+    const globalCostmapTopic=slamGlobalCostmapTopic.trim();
+    const localCostmapTopic=slamLocalCostmapTopic.trim();
+    const fpTopic=slamFootprintTopic.trim();
+    const robotTopic=slamRobotDescriptionTopic.trim();
+    if(slamMode&&slamShowCostmaps&&globalCostmapTopic){
+      desired.push({
+        kind:"costmap_global",
+        topic:globalCostmapTopic,
+        display:{enabled:true,type:"nav_msgs/msg/OccupancyGrid",viz:"costmap",icon:"▦",color:"#ff6680",alpha:.5,size:1,_slamAuto:"costmap_global"},
+      });
+    }
+    if(slamMode&&slamShowCostmaps&&localCostmapTopic){
+      desired.push({
+        kind:"costmap_local",
+        topic:localCostmapTopic,
+        display:{enabled:true,type:"nav_msgs/msg/OccupancyGrid",viz:"costmap",icon:"▦",color:"#ffaa00",alpha:.7,size:1,_slamAuto:"costmap_local"},
+      });
+    }
+    if(slamMode&&slamShowFootprint&&fpTopic){
+      desired.push({
+        kind:"footprint",
+        topic:fpTopic,
+        display:{enabled:true,type:"geometry_msgs/msg/PolygonStamped",viz:"footprint",icon:"▱",color:"#00bcd4",alpha:.85,size:2,_slamAuto:"footprint"},
+      });
+    }
+    if(slamMode&&slamShowRobotModel&&robotTopic){
+      desired.push({
+        kind:"robot_model",
+        topic:robotTopic,
+        display:{enabled:true,type:"std_msgs/msg/String",viz:"robot_model",icon:"▤",color:"#b5f5ff",alpha:.9,size:1.5,_slamAuto:"robot_model"},
+      });
+    }
+    setRos2Vis(prev=>{
+      let changed=false;
+      const next={...prev};
+      const desiredByKey=new Set(desired.map(d=>`${d.kind}:${d.topic}`));
+      for(const [topic,v] of Object.entries(next)){
+        if(v?._slamAuto&&!desiredByKey.has(`${v._slamAuto}:${topic}`)){delete next[topic];changed=true;}
+      }
+      for(const d of desired){
+        const cur=next[d.topic];
+        if(!cur){next[d.topic]=d.display;changed=true;}
+        else if(cur._slamAuto){
+          next[d.topic]={...cur,...d.display};
+          changed=true;
+        }
+      }
+      return changed?next:prev;
+    });
+  },[slamMode,slamShowCostmaps,slamGlobalCostmapTopic,slamLocalCostmapTopic,slamShowFootprint,slamFootprintTopic,slamShowRobotModel,slamRobotDescriptionTopic]);
+
   const reprojectSemanticForMap = useCallback((fromMeta, fromSize, toMeta, toSize)=>{
     if(!fromMeta||!toMeta||!fromSize?.h||!toSize?.h)return;
     if(sameMapProjection(fromMeta,fromSize,toMeta,toSize))return;
@@ -1942,6 +2093,20 @@ export default function Nav2MapEditor() {
       try{
         const st=await hostAPI.slamStatus();
         if(alive)setSlamRunning(!!st?.running);
+      }catch(e){/* ignore */}
+    };
+    sync();
+    const timer=setInterval(sync,1000);
+    return()=>{alive=false;clearInterval(timer);};
+  },[]);
+
+  useEffect(()=>{
+    if(!hostAPI?.nav2Status)return;
+    let alive=true;
+    const sync=async()=>{
+      try{
+        const st=await hostAPI.nav2Status();
+        if(alive)setNav2Running(!!st?.running);
       }catch(e){/* ignore */}
     };
     sync();
@@ -3070,10 +3235,7 @@ export default function Nav2MapEditor() {
 
   const savePGM=async ()=>{
     const c=canvasRef.current;if(!c)return;
-    const id=c.getContext("2d").getImageData(0,0,c.width,c.height);
-    const gray=new Uint8Array(c.width*c.height);for(let i=0;i<gray.length;i++)gray[i]=id.data[i*4];
-    const pgmData=writePGM(c.width,c.height,gray);
-    await nativeSave(`${meta.filename}.pgm`, [{ name: "PGM", extensions: ["pgm"] }], pgmData, null, pickHostPath);
+    await nativeSave(`${meta.filename}.pgm`, [{ name: "PGM", extensions: ["pgm"] }], canvasToPGM(c), null, pickHostPath);
     setStatus("💾 PGM 저장 완료");
   };
 
@@ -3181,6 +3343,7 @@ export default function Nav2MapEditor() {
     setShowSemPanel(true);
     setActiveTab("semantic");
     setTool("semGoal");
+    setSlamSaveName(timestampedMapName());
     setStatus(`SLAM 모드 시작: ${slamMapTopic.trim()||"/map"} live map 위에 시맨틱 골 작성`);
   },[slamMapTopic]);
 
@@ -3219,6 +3382,39 @@ export default function Nav2MapEditor() {
       setStatus(`⚠ slam_toolbox 중지 실패: ${e.message}`);
     }finally{
       setSlamBusy(false);
+    }
+  },[]);
+
+  const startNav2=useCallback(async()=>{
+    if(!hostAPI?.nav2Start){setStatus("⚠ Nav2 실행은 Electron 또는 robot backend에서만 가능합니다");return;}
+    setNav2Busy(true);
+    try{
+      const res=await hostAPI.nav2Start({
+        useSimTime:slamUseSimTime,
+        autostart:true,
+        paramsFile:nav2ParamsFile.trim()||"",
+      });
+      setNav2Running(!!res?.running);
+      enterSlamMode();
+      setStatus(`▶ Nav2 navigation_launch.py 실행${nav2ParamsFile.trim()?` (${basenameFromPath(nav2ParamsFile.trim())})`:""}`);
+    }catch(e){
+      setStatus(`⚠ Nav2 실행 실패: ${e.message}`);
+    }finally{
+      setNav2Busy(false);
+    }
+  },[slamUseSimTime,nav2ParamsFile,enterSlamMode]);
+
+  const stopNav2=useCallback(async()=>{
+    if(!hostAPI?.nav2Stop)return;
+    setNav2Busy(true);
+    try{
+      await hostAPI.nav2Stop();
+      setNav2Running(false);
+      setStatus("■ Nav2 중지");
+    }catch(e){
+      setStatus(`⚠ Nav2 중지 실패: ${e.message}`);
+    }finally{
+      setNav2Busy(false);
     }
   },[]);
 
@@ -3384,34 +3580,64 @@ export default function Nav2MapEditor() {
     },null,2);
   },[maps,rooms,carriers,objects,startPose,waypoints,goals,meta,canvasSize,toWorld]);
 
-  const saveAll=async ()=>{
+  const saveMapBundle=useCallback(async(defaultBase=meta.filename)=>{
     const c=canvasRef.current;if(!c)return;
+    const fallbackBase=cleanMapBaseName(defaultBase||meta.filename||"map")||"map";
     if(hasHostAPI){
       const dirPath = await pickHostPath({
         dialogType:"save",
-        defaultPath: meta.filename,
+        defaultPath: fallbackBase,
         filters: [{ name: "PGM", extensions: ["pgm"] }],
       });
-      if(!dirPath) return;
+      if(!dirPath) return null;
       const slashIdx = dirPath.lastIndexOf("/");
       const dir = slashIdx >= 0 ? dirPath.substring(0, slashIdx) : ".";
-      const baseName = dirPath.split("/").pop().replace(".pgm","");
+      const baseName = cleanMapBaseName(dirPath)||fallbackBase;
 
-      const imgData=c.getContext("2d").getImageData(0,0,c.width,c.height);
-      const gray=new Uint8Array(c.width*c.height);for(let i=0;i<gray.length;i++)gray[i]=imgData.data[i*4];
-      await hostAPI.writeFile(dirPath.endsWith(".pgm")?dirPath:`${dir}/${baseName}.pgm`, writePGM(c.width,c.height,gray), null);
+      await hostAPI.writeFile(dirPath.endsWith(".pgm")?dirPath:`${dir}/${baseName}.pgm`, canvasToPGM(c), null);
       await hostAPI.writeFile(`${dir}/${baseName}.yaml`, writeYAML(meta,baseName), "utf-8");
       await hostAPI.writeFile(`${dir}/${baseName}_semantic.json`, buildSemanticJSON(), "utf-8");
-      setStatus(`💾 저장 완료: ${baseName}.pgm · .yaml · _semantic.json`);
+      return {baseName};
     } else {
-      await savePGM();
-      const yblob=new Blob([writeYAML(meta,meta.filename)],{type:"text/plain"});
-      const ya=document.createElement("a");ya.href=URL.createObjectURL(yblob);ya.download=`${meta.filename}.yaml`;ya.click();
+      await nativeSave(`${fallbackBase}.pgm`, [{ name: "PGM", extensions: ["pgm"] }], canvasToPGM(c), null, pickHostPath);
+      const yblob=new Blob([writeYAML(meta,fallbackBase)],{type:"text/plain"});
+      const ya=document.createElement("a");ya.href=URL.createObjectURL(yblob);ya.download=`${fallbackBase}.yaml`;ya.click();
       const jblob=new Blob([buildSemanticJSON()],{type:"application/json"});
-      const ja=document.createElement("a");ja.href=URL.createObjectURL(jblob);ja.download=`${meta.filename}_semantic.json`;ja.click();
-      setStatus("💾 전체 저장 완료 (PGM + YAML + JSON)");
+      const ja=document.createElement("a");ja.href=URL.createObjectURL(jblob);ja.download=`${fallbackBase}_semantic.json`;ja.click();
+      return {baseName:fallbackBase};
     }
+  },[buildSemanticJSON,meta,pickHostPath]);
+
+  const saveAll=async ()=>{
+    const saved=await saveMapBundle(meta.filename);
+    if(saved)setStatus(`💾 저장 완료: ${saved.baseName}.pgm · .yaml · _semantic.json`);
   };
+
+  const saveSlamResult=useCallback(async()=>{
+    if(!slamMapStats?.width){setStatus("⚠ 저장할 SLAM live map이 없습니다");return;}
+    setSlamSaveBusy(true);
+    try{
+      const saved=await saveMapBundle(cleanMapBaseName(slamSaveName)||timestampedMapName());
+      if(!saved)return;
+      const stopped=[];
+      if(nav2Running&&hostAPI?.nav2Stop){
+        await hostAPI.nav2Stop();
+        setNav2Running(false);
+        stopped.push("Nav2");
+      }
+      if(slamRunning&&hostAPI?.slamStop){
+        await hostAPI.slamStop();
+        setSlamRunning(false);
+        stopped.push("slam_toolbox");
+      }
+      setSlamMode(false);
+      setStatus(`💾 SLAM 결과 저장 완료${stopped.length?` · ${stopped.join(" / ")} 중지`:""}: ${saved.baseName}.pgm · .yaml · _semantic.json`);
+    }catch(e){
+      setStatus(`⚠ SLAM 결과 저장 실패: ${e.message}`);
+    }finally{
+      setSlamSaveBusy(false);
+    }
+  },[saveMapBundle,slamMapStats,slamRunning,slamSaveName,nav2Running]);
 
   const fitView=()=>{
     const c=canvasRef.current,vp=vpRef.current;if(!c||!vp)return;
@@ -3745,7 +3971,7 @@ export default function Nav2MapEditor() {
 
         {/* ── ROS2 PANEL ── */}
         {showRos2Panel&&(
-          <Ros2Panel bridge={ros2Bridge} defaultUrl={defaultRosbridgeUrl(9090)} onVisChange={setRos2Vis}
+          <Ros2Panel bridge={ros2Bridge} defaultUrl={defaultRosbridgeUrl(9090)} vis={ros2Vis} onVisChange={setRos2Vis}
             frames={ros2Frames} onFramesChange={setRos2Frames} availableFrames={ros2AvailFrames}
             stats={ros2Stats} meta={meta} canvasSize={canvasSize} cameraDataUrl={cameraDataUrl}/>
         )}
@@ -3763,8 +3989,33 @@ export default function Nav2MapEditor() {
             onExitMode={exitSlamMode}
             slamRunning={slamRunning}
             slamBusy={slamBusy}
+            slamSaveBusy={slamSaveBusy}
             onStartSlam={startSlamToolbox}
             onStopSlam={stopSlamToolbox}
+            onSaveSlamResult={saveSlamResult}
+            nav2Running={nav2Running}
+            nav2Busy={nav2Busy}
+            nav2ParamsFile={nav2ParamsFile}
+            onChangeNav2ParamsFile={setNav2ParamsFile}
+            onStartNav2={startNav2}
+            onStopNav2={stopNav2}
+            slamSaveName={slamSaveName}
+            onChangeSaveName={setSlamSaveName}
+            slamShowFootprint={slamShowFootprint}
+            onChangeShowFootprint={setSlamShowFootprint}
+            slamFootprintTopic={slamFootprintTopic}
+            onChangeFootprintTopic={setSlamFootprintTopic}
+            slamShowRobotModel={slamShowRobotModel}
+            onChangeShowRobotModel={setSlamShowRobotModel}
+            slamRobotDescriptionTopic={slamRobotDescriptionTopic}
+            onChangeRobotDescriptionTopic={setSlamRobotDescriptionTopic}
+            slamShowCostmaps={slamShowCostmaps}
+            onChangeShowCostmaps={setSlamShowCostmaps}
+            slamGlobalCostmapTopic={slamGlobalCostmapTopic}
+            onChangeGlobalCostmapTopic={setSlamGlobalCostmapTopic}
+            slamLocalCostmapTopic={slamLocalCostmapTopic}
+            onChangeLocalCostmapTopic={setSlamLocalCostmapTopic}
+            ros2Stats={ros2Stats}
             slamMapTopic={slamMapTopic}
             onChangeMapTopic={setSlamMapTopic}
             slamUseSimTime={slamUseSimTime}

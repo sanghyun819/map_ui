@@ -40,7 +40,10 @@ const KNOWN_TYPES = [
   { type: "sensor_msgs/msg/CompressedImage", label: "CompressedImage", icon: "📷", viz: "camera" },
   { type: "sensor_msgs/msg/Image", label: "Image", icon: "📷", viz: "camera" },
   { type: "nav_msgs/msg/OccupancyGrid", label: "OccupancyGrid", icon: "🗺", viz: "map" },
+  { type: "nav_msgs/msg/OccupancyGrid", label: "Costmap", icon: "▦", viz: "costmap" },
   { type: "nav_msgs/msg/Path", label: "Path", icon: "🛤", viz: "path" },
+  { type: "geometry_msgs/msg/PolygonStamped", label: "Footprint", icon: "▱", viz: "footprint" },
+  { type: "std_msgs/msg/String", label: "RobotDescription", icon: "▤", viz: "robot_model" },
   { type: "sensor_msgs/msg/Imu", label: "Imu", icon: "🧭", viz: "raw" },
   { type: "geometry_msgs/msg/Twist", label: "Twist", icon: "🕹", viz: "raw" },
   { type: "visualization_msgs/msg/Marker", label: "Marker", icon: "📌", viz: "raw" },
@@ -52,6 +55,9 @@ const VIZ_DEFAULTS = {
   pose:  { color: "#00e676", size: 5, alpha: 1.0 },
   tf:    { color: "#00e676", size: 5, alpha: 1.0 },
   path:  { color: "#ffaa00", size: 1.5, alpha: 0.6 },
+  costmap: { color: "#ff6680", size: 1, alpha: 0.6 },
+  footprint: { color: "#00bcd4", size: 2, alpha: 0.85 },
+  robot_model: { color: "#b5f5ff", size: 1.5, alpha: 0.9 },
   camera:{ color: "#00d4ff", alpha: 1.0 },
   map:   { color: "#80deea", alpha: 0.7 },
   raw:   { color: "#9aa7b2", alpha: 0.7 },
@@ -61,19 +67,23 @@ function getTypeSuffix(topicType = "") {
   return topicType.split("/").pop() || "";
 }
 
-function detectViz(topicType = "") {
+function detectViz(topicType = "", topicName = "") {
   const s = getTypeSuffix(topicType);
   if (s === "LaserScan" || s === "PointCloud2") return "lidar";
   if (s === "Odometry" || s === "PoseStamped" || s === "PoseWithCovarianceStamped") return "pose";
   if (s === "TFMessage") return "tf";
   if (s === "Path") return "path";
+  if (s === "OccupancyGrid" && topicName.includes("costmap")) return "costmap";
+  if (s === "PolygonStamped") return "footprint";
+  if (s === "String" && topicName.includes("robot_description")) return "robot_model";
   if (s === "CompressedImage" || s === "Image") return "camera";
   if (s === "OccupancyGrid") return "map";
   return "raw";
 }
 
-function detectKnown(topicType = "") {
+function detectKnown(topicType = "", topicName = "") {
   const suffix = getTypeSuffix(topicType);
+  if (suffix === "OccupancyGrid" && topicName.includes("costmap")) return KNOWN_TYPES.find(k => k.viz === "costmap");
   return KNOWN_TYPES.find(k => getTypeSuffix(k.type) === suffix);
 }
 
@@ -158,7 +168,7 @@ function DisplayItem({ topic, v, onChange, onRemove }) {
               <span style={{ fontSize: 9, color: "#4a7080", width: 20, textAlign: "right" }}>{v.size ?? defaults.size ?? 5}</span>
             </div>
           )}
-          {v.viz === "path" && (
+          {(v.viz === "path" || v.viz === "costmap" || v.viz === "footprint" || v.viz === "robot_model") && (
             <div style={S.row}>
               <span style={S.label}>Line Width</span>
               <input type="range" min={0.5} max={5} step={0.5} value={v.size ?? defaults.size ?? 1.5}
@@ -206,7 +216,7 @@ function TFTree({ availableFrames, stats }) {
 // ══════════════════════════════════════════════════════════════════
 // Main Panel
 // ══════════════════════════════════════════════════════════════════
-export default function Ros2Panel({ bridge, defaultUrl = "ws://localhost:9090", onVisChange, frames, onFramesChange, availableFrames, stats, meta, canvasSize, cameraDataUrl }) {
+export default function Ros2Panel({ bridge, defaultUrl = "ws://localhost:9090", vis: externalVis, onVisChange, frames, onFramesChange, availableFrames, stats, meta, canvasSize, cameraDataUrl }) {
   const [url, setUrl] = useState(defaultUrl);
   const [connState, setConnState] = useState(bridge.state);
   const [topics, setTopics] = useState([]);
@@ -262,8 +272,13 @@ export default function Ros2Panel({ bridge, defaultUrl = "ws://localhost:9090", 
   }, [connState, showTopicBrowser, fetchTopics]);
 
   useEffect(() => {
+    if (externalVis && externalVis !== vis) setVis(externalVis);
+  }, [externalVis]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (externalVis && externalVis !== vis) return;
     if (onVisChange) onVisChange(vis);
-  }, [vis, onVisChange]);
+  }, [vis, onVisChange, externalVis]);
 
   const filteredTopics = useMemo(() => {
     const q = topicFilter.trim().toLowerCase();
@@ -277,8 +292,8 @@ export default function Ros2Panel({ bridge, defaultUrl = "ws://localhost:9090", 
   // Add a topic as display
   const addDisplay = (topicName, topicType) => {
     if (vis[topicName]) return; // already exists
-    const known = detectKnown(topicType);
-    const vizType = detectViz(topicType);
+    const known = detectKnown(topicType, topicName);
+    const vizType = detectViz(topicType, topicName);
     const defaults = VIZ_DEFAULTS[vizType] || {};
     setVis(prev => ({
       ...prev,
@@ -405,8 +420,8 @@ export default function Ros2Panel({ bridge, defaultUrl = "ws://localhost:9090", 
               <div style={{ maxHeight: 180, overflow: "auto", display: "flex", flexDirection: "column", gap: 1 }}>
                 {filteredTopics.map(t => {
                   const active = !!vis[t.name];
-                  const known = detectKnown(t.type);
-                  const vizType = detectViz(t.type);
+                  const known = detectKnown(t.type, t.name);
+                  const vizType = detectViz(t.type, t.name);
                   return (
                     <div key={t.name}
                       onClick={() => !active && addDisplay(t.name, t.type)}
@@ -504,6 +519,20 @@ export default function Ros2Panel({ bridge, defaultUrl = "ws://localhost:9090", 
               <div style={S.row}>
                 <span style={{ color: "#4a7080", width: 55 }}>Path T</span>
                 <span style={{ color: (st.pathTopicCount || 0) > 0 ? "#ffaa00" : "#3a5060" }}>{st.pathTopicCount || 0}</span>
+              </div>
+              <div style={S.row}>
+                <span style={{ color: "#4a7080", width: 55 }}>Costmap</span>
+                <span style={{ color: (st.costmapTopicCount || 0) > 0 ? "#ff6680" : "#3a5060" }}>{st.costmapTopicCount || 0}</span>
+              </div>
+              <div style={S.row}>
+                <span style={{ color: "#4a7080", width: 55 }}>Footprint</span>
+                <span style={{ color: (st.footprintTopicCount || 0) > 0 ? "#00bcd4" : "#3a5060" }}>{st.footprintTopicCount || 0}</span>
+              </div>
+              <div style={S.row}>
+                <span style={{ color: "#4a7080", width: 55 }}>Robot</span>
+                <span style={{ color: (st.robotModelLinkCount || 0) > 0 ? "#b5f5ff" : "#3a5060" }}>
+                  {st.robotModelLinkCount ? `${st.robotModelLinkCount} links` : st.robotDescriptionLoaded ? "URDF loaded" : "—"}
+                </span>
               </div>
               <div style={S.row}>
                 <span style={{ color: "#4a7080", width: 55 }}>TF</span>

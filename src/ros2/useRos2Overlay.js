@@ -46,6 +46,19 @@ function isPathDisplay(v = {}) {
   return v.viz === "path" || typeSuffix === "Path";
 }
 
+function isCostmapDisplay(v = {}) {
+  return v.viz === "costmap";
+}
+
+function isFootprintDisplay(v = {}) {
+  const typeSuffix = (v.type || "").split("/").pop();
+  return v.viz === "footprint" || typeSuffix === "PolygonStamped";
+}
+
+function isRobotModelDisplay(v = {}) {
+  return v.viz === "robot_model";
+}
+
 function isTfDisplay(v = {}) {
   const typeSuffix = (v.type || "").split("/").pop();
   return v.viz === "tf" || typeSuffix === "TFMessage";
@@ -203,6 +216,186 @@ function rawImageDataUrl(msg) {
   return canvas.toDataURL("image/png");
 }
 
+function normalizeOccupancyValue(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return -1;
+  return n > 127 ? n - 256 : n;
+}
+
+function decodeOccupancyValues(data) {
+  if (!data) return [];
+  if (typeof data === "string") {
+    const bin = atob(data);
+    const out = new Int16Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = normalizeOccupancyValue(bin.charCodeAt(i));
+    return out;
+  }
+  if (Array.isArray(data)) return data.map(normalizeOccupancyValue);
+  if (ArrayBuffer.isView(data)) {
+    const out = new Int16Array(data.length);
+    for (let i = 0; i < data.length; i++) out[i] = normalizeOccupancyValue(data[i]);
+    return out;
+  }
+  if (data instanceof ArrayBuffer) {
+    const bytes = new Uint8Array(data);
+    const out = new Int16Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) out[i] = normalizeOccupancyValue(bytes[i]);
+    return out;
+  }
+  return [];
+}
+
+function hexToRgb(hex, fallback = [255, 80, 80]) {
+  const m = String(hex || "").trim().match(/^#?([0-9a-f]{6})$/i);
+  if (!m) return fallback;
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function occupancyGridInfo(msg) {
+  const info = msg?.info || {};
+  const width = Math.max(0, Math.floor(Number(info.width) || 0));
+  const height = Math.max(0, Math.floor(Number(info.height) || 0));
+  const resolution = Math.max(1e-6, Number(info.resolution) || 0.05);
+  const originPose = info.origin || {};
+  const pos = originPose.position || {};
+  const rot = originPose.orientation || {};
+  const theta = Math.atan2(2 * ((rot.w ?? 1) * (rot.z ?? 0) + (rot.x ?? 0) * (rot.y ?? 0)), 1 - 2 * ((rot.y ?? 0) ** 2 + (rot.z ?? 0) ** 2));
+  return {
+    width,
+    height,
+    resolution,
+    frameId: msg?.header?.frame_id?.replace(/^\//, "") || "map",
+    originPose: { x: Number(pos.x) || 0, y: Number(pos.y) || 0, theta: Number.isFinite(theta) ? theta : 0 },
+  };
+}
+
+function costmapImageCanvas(msg, color, alpha = 0.65) {
+  const { width, height } = occupancyGridInfo(msg);
+  if (!width || !height) return null;
+  const values = decodeOccupancyValues(msg?.data);
+  if (values.length < width * height) return null;
+  const rgb = hexToRgb(color, [255, 80, 80]);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  const img = ctx.createImageData(width, height);
+  for (let y = 0; y < height; y++) {
+    const srcY = height - 1 - y;
+    for (let x = 0; x < width; x++) {
+      const cost = values[srcY * width + x];
+      const dst = (y * width + x) * 4;
+      if (cost <= 0) {
+        img.data[dst + 3] = 0;
+        continue;
+      }
+      const t = Math.max(0.05, Math.min(1, cost / 100));
+      img.data[dst] = Math.round(255 * t + rgb[0] * (1 - t));
+      img.data[dst + 1] = Math.round(rgb[1] * (1 - t) + 40 * t);
+      img.data[dst + 2] = Math.round(rgb[2] * (1 - t) + 20 * t);
+      img.data[dst + 3] = Math.round(255 * Math.min(1, alpha) * (0.25 + 0.75 * t));
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvas;
+}
+
+function parseNumberList(value = "", fallback = []) {
+  const nums = String(value).trim().split(/\s+/).map(Number).filter(Number.isFinite);
+  return nums.length ? nums : fallback;
+}
+
+function directChild(el, tagName) {
+  const want = tagName.toLowerCase();
+  return Array.from(el?.children || []).find(c => c.tagName?.toLowerCase() === want) || null;
+}
+
+function originPoseFromElement(el) {
+  const origin = directChild(el, "origin");
+  const xyz = parseNumberList(origin?.getAttribute("xyz"), [0, 0, 0]);
+  const rpy = parseNumberList(origin?.getAttribute("rpy"), [0, 0, 0]);
+  return { x: xyz[0] || 0, y: xyz[1] || 0, theta: rpy[2] || 0 };
+}
+
+function circlePoints(radius, n = 28) {
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    pts.push({ x: Math.cos(a) * radius, y: Math.sin(a) * radius });
+  }
+  return pts;
+}
+
+function parseUrdfShape(geometry) {
+  const box = directChild(geometry, "box");
+  if (box) {
+    const size = parseNumberList(box.getAttribute("size"), [0.2, 0.2, 0.1]);
+    const hx = Math.max(0.01, (size[0] || 0.2) / 2);
+    const hy = Math.max(0.01, (size[1] || 0.2) / 2);
+    return { points: [{ x: -hx, y: -hy }, { x: hx, y: -hy }, { x: hx, y: hy }, { x: -hx, y: hy }] };
+  }
+
+  const cylinder = directChild(geometry, "cylinder");
+  if (cylinder) {
+    const radius = Math.max(0.01, Number(cylinder.getAttribute("radius")) || 0.1);
+    return { points: circlePoints(radius) };
+  }
+
+  const sphere = directChild(geometry, "sphere");
+  if (sphere) {
+    const radius = Math.max(0.01, Number(sphere.getAttribute("radius")) || 0.1);
+    return { points: circlePoints(radius) };
+  }
+
+  const mesh = directChild(geometry, "mesh");
+  if (mesh) {
+    const scale = parseNumberList(mesh.getAttribute("scale"), [0.18, 0.18, 0.18]);
+    const hx = Math.max(0.04, (scale[0] || 0.18) / 2);
+    const hy = Math.max(0.04, (scale[1] || 0.18) / 2);
+    return { points: [{ x: 0, y: -hy }, { x: hx, y: 0 }, { x: 0, y: hy }, { x: -hx, y: 0 }] };
+  }
+
+  return null;
+}
+
+function parseRobotDescription(xmlText) {
+  const text = String(xmlText || "").trim();
+  if (!text) return null;
+  const doc = new DOMParser().parseFromString(text, "application/xml");
+  if (doc.querySelector("parsererror")) throw new Error("robot_description XML parse failed");
+
+  const robot = doc.documentElement;
+  const links = [];
+  for (const linkEl of Array.from(doc.getElementsByTagName("link"))) {
+    const name = linkEl.getAttribute("name");
+    if (!name) continue;
+    const geometryParents = Array.from(linkEl.children || [])
+      .filter(c => ["collision", "visual"].includes(c.tagName?.toLowerCase()));
+    geometryParents.sort((a, b) => (a.tagName.toLowerCase() === "collision" ? -1 : 1) - (b.tagName.toLowerCase() === "collision" ? -1 : 1));
+
+    const shapes = [];
+    for (const parent of geometryParents) {
+      const geometry = directChild(parent, "geometry");
+      const shape = parseUrdfShape(geometry);
+      if (!shape) continue;
+      shapes.push({ ...shape, origin: originPoseFromElement(parent) });
+      if (shapes.length >= 2) break;
+    }
+    if (shapes.length) links.push({ name, shapes });
+  }
+  return { name: robot?.getAttribute("name") || "robot", links };
+}
+
+function transformLocalPolygon(points, pose) {
+  const cos = Math.cos(pose.theta || 0);
+  const sin = Math.sin(pose.theta || 0);
+  return points.map(p => ({
+    x: (pose.x || 0) + p.x * cos - p.y * sin,
+    y: (pose.y || 0) + p.x * sin + p.y * cos,
+  }));
+}
+
 /**
  * useRos2Overlay — rviz2-style visualization.
  *
@@ -218,6 +411,9 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
 
   const poseLayersRef = useRef({});  // topic -> { pose:{x,y,theta}, ts }
   const pathLayersRef = useRef({});  // topic -> { pix:[{x,y}], world:[{x,y,z}], ts }
+  const costmapLayersRef = useRef({}); // topic -> { image, pose, resolution, width, height, ts }
+  const footprintLayersRef = useRef({}); // topic -> { pix:[{x,y}], world:[{x,y,z}], ts }
+  const robotModelLayersRef = useRef({}); // topic -> parsed URDF model
   const pathRef = useRef([]);
   const pathWorldRef = useRef([]);
   const cameraRef = useRef(null);
@@ -234,6 +430,10 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
     lidarTopicCount: 0,
     poseTopicCount: 0,
     pathTopicCount: 0,
+    costmapTopicCount: 0,
+    footprintTopicCount: 0,
+    robotModelLinkCount: 0,
+    robotDescriptionLoaded: false,
     tfResolved: false,
     tfChain: "",
     robotPose: null,
@@ -370,6 +570,9 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
       lidarLayersRef.current = {};
       poseLayersRef.current = {};
       pathLayersRef.current = {};
+      costmapLayersRef.current = {};
+      footprintLayersRef.current = {};
+      robotModelLayersRef.current = {};
       lidarRef.current = [];
       lidarWorldRef.current = [];
       pathRef.current = [];
@@ -382,6 +585,10 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
       statsRef.current.lidarTopicCount = 0;
       statsRef.current.poseTopicCount = 0;
       statsRef.current.pathTopicCount = 0;
+      statsRef.current.costmapTopicCount = 0;
+      statsRef.current.footprintTopicCount = 0;
+      statsRef.current.robotModelLinkCount = 0;
+      statsRef.current.robotDescriptionLoaded = false;
       return;
     }
 
@@ -405,6 +612,9 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
     const activeLidarTopics = new Set();
     const activePoseTopics = new Set();
     const activePathTopics = new Set();
+    const activeCostmapTopics = new Set();
+    const activeFootprintTopics = new Set();
+    const activeRobotModelTopics = new Set();
     const activeCameraTopics = new Set();
 
     for (const [topic, v] of Object.entries(vis)) {
@@ -538,6 +748,81 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
         unsubsRef.current.push(unsub);
       }
 
+      // ── Nav2 costmap overlay ──
+      else if (isCostmapDisplay(v)) {
+        activeCostmapTopics.add(topic);
+        const unsub = bridge.subscribe(topic, v.type || "nav_msgs/msg/OccupancyGrid", (msg) => {
+          try {
+            const info = occupancyGridInfo(msg);
+            if (!info.width || !info.height) return;
+            const frameTf = lookupTransform(info.frameId);
+            if (!frameTf) {
+              statsRef.current.tfResolved = false;
+              statsRef.current.tfChain = `${fixedFrame}→???→${info.frameId || "?"}`;
+              return;
+            }
+            const image = costmapImageCanvas(msg, v.color || "#ff6680", v.alpha ?? 0.65);
+            if (!image) return;
+            costmapLayersRef.current[topic] = {
+              image,
+              pose: composePose(frameTf, info.originPose),
+              resolution: info.resolution,
+              width: info.width,
+              height: info.height,
+              frameId: info.frameId,
+              ts: Date.now(),
+            };
+            requestDraw();
+          } catch (e) {
+            statsRef.current.lastError = `costmap: ${e.message}`;
+          }
+        }, 250, { queue_length: 1 });
+        unsubsRef.current.push(unsub);
+      }
+
+      // ── Footprint polygon ──
+      else if (isFootprintDisplay(v)) {
+        activeFootprintTopics.add(topic);
+        const unsub = bridge.subscribe(topic, v.type, (msg) => {
+          try {
+            const frameId = msg.header?.frame_id?.replace(/^\//, "");
+            const raw = msg.polygon?.points || msg.points || [];
+            const local = raw.map(p => ({ x: Number(p.x) || 0, y: Number(p.y) || 0 })).filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+            if (local.length < 2) return;
+            const tfInfo = lookupTransform(frameId);
+            const world2 = tfInfo ? transformPoints(local, tfInfo) : local;
+            footprintLayersRef.current[topic] = {
+              pix: world2.map(p => w2p(p.x, p.y)),
+              world: world2.map(p => ({ x: p.x, y: p.y, z: 0.035 })),
+              frameId,
+              ts: Date.now(),
+            };
+            requestDraw();
+          } catch (e) {
+            statsRef.current.lastError = `footprint: ${e.message}`;
+          }
+        }, 100);
+        unsubsRef.current.push(unsub);
+      }
+
+      // ── RobotModel / robot_description URDF ──
+      else if (isRobotModelDisplay(v)) {
+        activeRobotModelTopics.add(topic);
+        const unsub = bridge.subscribe(topic, v.type, (msg) => {
+          try {
+            const xml = typeof msg === "string" ? msg : msg?.data;
+            const model = parseRobotDescription(xml);
+            if (!model) return;
+            robotModelLayersRef.current[topic] = { ...model, ts: Date.now() };
+            statsRef.current.robotDescriptionLoaded = true;
+            requestDraw();
+          } catch (e) {
+            statsRef.current.lastError = `robot_description: ${e.message}`;
+          }
+        }, 0, { qos: { reliability: "reliable", durability: "transient_local", history: "keep_last", depth: 1 } });
+        unsubsRef.current.push(unsub);
+      }
+
       // ── Camera / depth image preview ──
       else if (isCameraDisplay(v)) {
         activeCameraTopics.add(topic);
@@ -573,6 +858,15 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
     }
     for (const topic of Object.keys(pathLayersRef.current)) {
       if (!activePathTopics.has(topic)) delete pathLayersRef.current[topic];
+    }
+    for (const topic of Object.keys(costmapLayersRef.current)) {
+      if (!activeCostmapTopics.has(topic)) delete costmapLayersRef.current[topic];
+    }
+    for (const topic of Object.keys(footprintLayersRef.current)) {
+      if (!activeFootprintTopics.has(topic)) delete footprintLayersRef.current[topic];
+    }
+    for (const topic of Object.keys(robotModelLayersRef.current)) {
+      if (!activeRobotModelTopics.has(topic)) delete robotModelLayersRef.current[topic];
     }
     if (cameraRef.current && !activeCameraTopics.has(cameraRef.current.topic)) {
       cameraRef.current = null;
@@ -736,6 +1030,96 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
     pathRef.current = primaryPath?.pix || [];
     pathWorldRef.current = primaryPath?.world || [];
     statsRef.current.pathTopicCount = pathTopicCount;
+
+    // ── Costmaps, drawn as translucent occupancy grid overlays ──
+    let costmapTopicCount = 0;
+    for (const [topic, v] of visEntries) {
+      if (v.enabled === false || !isCostmapDisplay(v)) continue;
+      const layer = costmapLayersRef.current[topic];
+      if (!layer?.image) continue;
+      const { pose, resolution, width, height, image } = layer;
+      const origin = w2p(pose.x, pose.y);
+      const xEnd = w2p(pose.x + Math.cos(pose.theta) * width * resolution, pose.y + Math.sin(pose.theta) * width * resolution);
+      const yEnd = w2p(pose.x - Math.sin(pose.theta) * height * resolution, pose.y + Math.cos(pose.theta) * height * resolution);
+      const xAxis = { x: (xEnd.x - origin.x) / width, y: (xEnd.y - origin.y) / width };
+      const yAxis = { x: (yEnd.x - origin.x) / height, y: (yEnd.y - origin.y) / height };
+
+      ctx.save();
+      ctx.globalAlpha = 1;
+      ctx.translate(origin.x + yAxis.x * height, origin.y + yAxis.y * height);
+      ctx.transform(xAxis.x, xAxis.y, -yAxis.x, -yAxis.y, 0, 0);
+      ctx.drawImage(image, 0, 0);
+      ctx.restore();
+      costmapTopicCount += 1;
+    }
+    statsRef.current.costmapTopicCount = costmapTopicCount;
+
+    // ── Footprint polygons ──
+    let footprintTopicCount = 0;
+    for (const [topic, v] of visEntries) {
+      if (v.enabled === false || !isFootprintDisplay(v)) continue;
+      const layer = footprintLayersRef.current[topic];
+      const poly = layer?.pix || [];
+      if (poly.length < 2) continue;
+      footprintTopicCount += 1;
+
+      ctx.save();
+      ctx.globalAlpha = v.alpha ?? 0.85;
+      ctx.strokeStyle = v.color || "#00bcd4";
+      ctx.fillStyle = v.color || "#00bcd4";
+      ctx.lineWidth = v.size ?? 2;
+      ctx.beginPath();
+      ctx.moveTo(poly[0].x, poly[0].y);
+      for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
+      ctx.closePath();
+      ctx.globalAlpha = Math.min(0.22, (v.alpha ?? 0.85) * 0.25);
+      ctx.fill();
+      ctx.globalAlpha = v.alpha ?? 0.85;
+      ctx.stroke();
+      ctx.restore();
+    }
+    statsRef.current.footprintTopicCount = footprintTopicCount;
+
+    // ── Robot description model, projected to map from per-link TF ──
+    let robotModelLinkCount = 0;
+    let robotDescriptionLoaded = false;
+    for (const [topic, v] of visEntries) {
+      if (v.enabled === false || !isRobotModelDisplay(v)) continue;
+      const model = robotModelLayersRef.current[topic];
+      if (!model) continue;
+      robotDescriptionLoaded = true;
+
+      ctx.save();
+      ctx.strokeStyle = v.color || "#b5f5ff";
+      ctx.fillStyle = v.color || "#b5f5ff";
+      ctx.lineWidth = v.size ?? 1.5;
+      ctx.globalAlpha = v.alpha ?? 0.9;
+
+      for (const link of model.links || []) {
+        const linkTf = lookupTransform(link.name);
+        if (!linkTf) continue;
+        let linkDrawn = false;
+        for (const shape of link.shapes || []) {
+          const pose = composePose(linkTf, shape.origin || { x: 0, y: 0, theta: 0 });
+          const worldPoly = transformLocalPolygon(shape.points || [], pose);
+          const pix = worldPoly.map(p => w2p(p.x, p.y));
+          if (pix.length < 2) continue;
+          ctx.beginPath();
+          ctx.moveTo(pix[0].x, pix[0].y);
+          for (let i = 1; i < pix.length; i++) ctx.lineTo(pix[i].x, pix[i].y);
+          ctx.closePath();
+          ctx.globalAlpha = Math.min(0.18, (v.alpha ?? 0.9) * 0.2);
+          ctx.fill();
+          ctx.globalAlpha = v.alpha ?? 0.9;
+          ctx.stroke();
+          linkDrawn = true;
+        }
+        if (linkDrawn) robotModelLinkCount += 1;
+      }
+      ctx.restore();
+    }
+    statsRef.current.robotModelLinkCount = robotModelLinkCount;
+    statsRef.current.robotDescriptionLoaded = robotDescriptionLoaded;
 
     // ── Pose (multi-topic) ──
     let primaryPose = null;

@@ -14,6 +14,9 @@ let rosbridgeLastOutput = "";
 let slamProcess = null;
 let slamLastOutput = "";
 let slamOptions = null;
+let nav2Process = null;
+let nav2LastOutput = "";
+let nav2Options = null;
 let bagProcess = null;
 let bagLastOutput = "";
 let bagOptions = null;
@@ -37,6 +40,10 @@ function appendRosbridgeOutput(data) {
 
 function appendSlamOutput(data) {
   slamLastOutput = appendOutput(slamLastOutput, data);
+}
+
+function appendNav2Output(data) {
+  nav2LastOutput = appendOutput(nav2LastOutput, data);
 }
 
 function rosSetupCommand() {
@@ -128,6 +135,49 @@ function startSlamProcess(options = {}) {
     if (slamProcess?.pid === child.pid) slamProcess = null;
   });
   return { running: true, pid: child.pid, options: slamOptions };
+}
+
+function stopNav2Process() {
+  if (!nav2Process) return false;
+  const proc = nav2Process;
+  nav2Process = null;
+  return stopProcessGroup(proc);
+}
+
+function startNav2Process(options = {}) {
+  if (nav2Process) return { running: true, pid: nav2Process.pid, options: nav2Options };
+  if (options.allowMotion !== true) {
+    return { running: false, blocked: true, reason: "Nav2 launch is blocked by default to prevent robot motion" };
+  }
+  nav2LastOutput = "";
+
+  const useSimTime = options.useSimTime === true || options.use_sim_time === true;
+  const autostart = options.autostart !== false;
+  const paramsFile = String(options.paramsFile || options.params_file || "").trim();
+  const launchArgs = [
+    `use_sim_time:=${useSimTime ? "true" : "false"}`,
+    `autostart:=${autostart ? "true" : "false"}`,
+  ];
+  if (paramsFile) launchArgs.push('params_file:="$NAV2_PARAMS_FILE"');
+  const cmd = [
+    rosSetupCommand(),
+    `exec ros2 launch nav2_bringup navigation_launch.py ${launchArgs.join(" ")}`,
+  ].join("; ");
+
+  const child = spawn("bash", ["-lc", cmd], {
+    env: { ...process.env, NAV2_PARAMS_FILE: paramsFile },
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  nav2Process = child;
+  nav2Options = { useSimTime, autostart, paramsFile, launchFile: "navigation_launch.py" };
+  child.stdout.on("data", appendNav2Output);
+  child.stderr.on("data", appendNav2Output);
+  child.on("close", (code, signal) => {
+    appendNav2Output(`\n[nav2 exited code=${code} signal=${signal || ""}]\n`);
+    if (nav2Process?.pid === child.pid) nav2Process = null;
+  });
+  return { running: true, pid: child.pid, options: nav2Options };
 }
 
 function readBagInfo(bagPath) {
@@ -309,6 +359,9 @@ const apiRoutes = {
   "POST /api/slam/start": async body => startSlamProcess(body || {}),
   "POST /api/slam/stop": async () => ({ running: false, stopped: stopSlamProcess() }),
   "GET /api/slam/status": async () => ({ running: !!slamProcess, output: slamLastOutput, options: slamOptions }),
+  "POST /api/nav2/start": async body => startNav2Process(body || {}),
+  "POST /api/nav2/stop": async () => ({ running: false, stopped: stopNav2Process() }),
+  "GET /api/nav2/status": async () => ({ running: !!nav2Process, output: nav2LastOutput, options: nav2Options }),
   "POST /api/rosbag/play": async body => startBagProcess(body || {}),
   "POST /api/rosbag/info": async body => readBagInfo(body.path),
   "POST /api/rosbag/stop": async () => ({ running: false, stopped: stopBagProcess() }),
@@ -411,6 +464,7 @@ const server = http.createServer(async (req, res) => {
 function shutdown() {
   stopRosbridgeProcess();
   stopSlamProcess();
+  stopNav2Process();
   stopBagProcess();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref();
