@@ -1459,6 +1459,12 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,se
                 {isSel&&(
                   <div style={{marginTop:4,display:"flex",flexDirection:"column",gap:3}} onClick={e=>e.stopPropagation()}>
                     <div style={{display:"flex",alignItems:"center",gap:4}}>
+                      <span style={{fontSize:9,color:"rgba(255,102,128,0.5)",whiteSpace:"nowrap"}}>라벨</span>
+                      <input value={g.label||""} onChange={e=>onReassign("goal",g.id,"label",e.target.value)}
+                        onClick={e=>e.stopPropagation()}
+                        style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}/>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:4}}>
                       <span style={{fontSize:9,color:"rgba(255,102,128,0.5)",whiteSpace:"nowrap"}}>소속방</span>
                       <select value={g.room_id||""} onChange={e=>onReassign("goal",g.id,"room_id",e.target.value||null)}
                         style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}>
