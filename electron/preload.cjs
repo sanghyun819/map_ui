@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   writeFile: (filePath, data, encoding) =>
     ipcRenderer.invoke("fs:writeFile", filePath, data, encoding),
   readDir: (dirPath) => ipcRenderer.invoke("fs:readDir", dirPath),
+  updateLaunchMap: (options) => ipcRenderer.invoke("workspace:updateLaunchMap", options),
+  buildWorkspace: (options) => ipcRenderer.invoke("workspace:build", options),
 
   // rosbridge websocket
   rosbridgeStart: (options) => ipcRenderer.invoke("rosbridge:start", options),

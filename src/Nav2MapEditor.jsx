@@ -79,6 +79,8 @@ function createRobotBackendAPI(baseUrl) {
     readDir: (dirPath) => post("/api/fs/readdir", { path: dirPath }),
     browseDir: (dirPath) => post("/api/fs/readdir", { path: dirPath, withFileTypes: true }),
     fsRoots: () => get("/api/fs/roots"),
+    updateLaunchMap: (options) => post("/api/workspace/update-launch-map", options),
+    buildWorkspace: (options) => post("/api/workspace/build", options),
     rosbridgeStart: (options) => post("/api/rosbridge/start", options),
     rosbridgeStop: () => post("/api/rosbridge/stop"),
     rosbridgeStatus: () => get("/api/rosbridge/status"),
@@ -445,6 +447,45 @@ function resolveMapPath(dir, relPath){
     else stack.push(part);
   }
   return prefix+stack.join("/");
+}
+function inferWorkspaceRootFromPackagePath(filePath){
+  const normalized=String(filePath||"").replace(/\\/g,"/");
+  if(!normalized)return "";
+  const srcIdx=normalized.indexOf("/src/");
+  return srcIdx>0?normalized.slice(0,srcIdx):"";
+}
+function inferPackageNameFromPackagePath(filePath){
+  const normalized=String(filePath||"").replace(/\\/g,"/");
+  if(!normalized)return "";
+  const parts=normalized.split("/").filter(Boolean);
+  const srcIdx=parts.lastIndexOf("src");
+  return srcIdx>=0&&srcIdx+1<parts.length?parts[srcIdx+1]||"":"";
+}
+function inferWorkspaceRootFromLaunchPath(launchPath){
+  const normalized=String(launchPath||"").replace(/\\/g,"/");
+  if(!normalized)return "";
+  const packageRoot=inferWorkspaceRootFromPackagePath(normalized);
+  if(packageRoot)return packageRoot;
+  const launchIdx=normalized.lastIndexOf("/launch/");
+  if(launchIdx>0)return normalized.slice(0,launchIdx);
+  return dirnameFromPath(dirnameFromPath(normalized))||dirnameFromPath(normalized)||"";
+}
+function inferPackageNameFromLaunchPath(launchPath){
+  const normalized=String(launchPath||"").replace(/\\/g,"/");
+  if(!normalized)return "";
+  const parts=normalized.split("/").filter(Boolean);
+  const launchIdx=parts.lastIndexOf("launch");
+  if(launchIdx>0)return parts[launchIdx-1]||"";
+  return inferPackageNameFromPackagePath(normalized);
+}
+function inferLaunchMapArgName(text){
+  const source=String(text||"");
+  for(const name of ["map","map_yaml","map_file","yaml_filename"]){
+    const quoted=`['"]${name}['"]`;
+    if(new RegExp(`DeclareLaunchArgument\\s*\\(\\s*${quoted}`,"s").test(source))return name;
+    if(new RegExp(`LaunchConfiguration\\s*\\(\\s*${quoted}`,"s").test(source))return name;
+  }
+  return "";
 }
 function toArrayBufferData(data){
   if(data instanceof ArrayBuffer)return data;
@@ -1530,6 +1571,7 @@ function SlamModePanel({
   slamMapStats,
   onPickGoalTool,
   onPickSelectTool,
+  onOpenWorkspaceSync,
 }) {
   const mapOk=!!slamMapStats?.width;
   const rosStats=ros2Stats?.current||{};
@@ -1644,6 +1686,11 @@ function SlamModePanel({
               <button style={{...btn(true),justifyContent:"center",marginTop:3,opacity:slamSaveBusy ? .45 : 1}} onClick={onSaveSlamResult} disabled={slamSaveBusy}>
                 {slamSaveBusy?"저장 중":"💾 완료 저장"}
               </button>
+              {hasHostAPI&&(
+                <button style={{...btn(),justifyContent:"center",marginTop:2}} onClick={onOpenWorkspaceSync}>
+                  🔗 launch·build
+                </button>
+              )}
             </>
           ):(
             <div style={{fontSize:10,color:"rgba(255,102,128,0.48)",lineHeight:1.5}}>{slamMode?`${slamMapTopic} 수신 대기 중`:"SLAM 모드를 열면 map topic을 구독합니다"}</div>
@@ -1793,6 +1840,15 @@ export default function Nav2MapEditor() {
   const [bagBusy, setBagBusy] = useState(false);
   const [fileDialog, setFileDialog] = useState(null);
   const fileDialogResolveRef = useRef(null);
+  const [showWorkspaceDlg, setShowWorkspaceDlg] = useState(false);
+  const [workspaceSync, setWorkspaceSync] = useState({
+    launchPath: "",
+    mapPath: "",
+    argName: "map",
+    workspaceRoot: "",
+    packageName: "",
+  });
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
 
   const pickHostPath=useCallback((options={})=>{
     if(hostAPI?.isRobotBackend&&hostAPI?.browseDir){
@@ -1810,6 +1866,21 @@ export default function Nav2MapEditor() {
     fileDialogResolveRef.current=null;
     setFileDialog(null);
     if(resolve)resolve(value||null);
+  },[]);
+
+  const pickWorkspacePath=useCallback(async(options)=>{
+    if(!hostAPI?.openFileDialog&&!(hostAPI?.isRobotBackend&&hostAPI?.browseDir))return null;
+    return pickHostPath(options);
+  },[pickHostPath]);
+
+  const syncWorkspaceMapPath=useCallback((mapPath)=>{
+    if(!mapPath)return;
+    setWorkspaceSync(prev=>({
+      ...prev,
+      mapPath,
+      workspaceRoot: prev.workspaceRoot || inferWorkspaceRootFromLaunchPath(prev.launchPath) || inferWorkspaceRootFromPackagePath(mapPath),
+      packageName: prev.packageName || inferPackageNameFromLaunchPath(prev.launchPath) || inferPackageNameFromPackagePath(mapPath),
+    }));
   },[]);
 
   useEffect(() => {
@@ -3207,14 +3278,16 @@ export default function Nav2MapEditor() {
       let yamlMeta=null;
       for(const yamlName of [`${baseName}.yaml`,`${baseName}.yml`]){
         try{
-          const yamlText=await hostAPI.readFile(`${dir}/${yamlName}`,"utf-8");
-          if(yamlText){yamlMeta=loadYAMLData(yamlText,yamlName);setStatus(`✅ PGM + YAML 로드 완료`);break;}
+          const yamlPath=`${dir}/${yamlName}`;
+          const yamlText=await hostAPI.readFile(yamlPath,"utf-8");
+          if(yamlText){yamlMeta=loadYAMLData(yamlText,yamlName);syncWorkspaceMapPath(yamlPath);setStatus(`✅ PGM + YAML 로드 완료`);break;}
         }catch(e){/* yaml not found, skip */}
       }
       await tryAutoLoadSemantic(dir,baseName,{meta:yamlMeta,canvasSize:loadedSize});
     } else if(/\.(yaml|yml)$/i.test(name)){
       const text = await hostAPI.readFile(filePath, "utf-8");
       const parsed=loadYAMLData(text,name);
+      syncWorkspaceMapPath(filePath);
       let loadedSize=null;
       // Auto-detect PGM from yaml content or same directory
       if(parsed.image){
@@ -3581,7 +3654,7 @@ export default function Nav2MapEditor() {
   },[maps,rooms,carriers,objects,startPose,waypoints,goals,meta,canvasSize,toWorld]);
 
   const saveMapBundle=useCallback(async(defaultBase=meta.filename)=>{
-    const c=canvasRef.current;if(!c)return;
+    const c=canvasRef.current;if(!c)return null;
     const fallbackBase=cleanMapBaseName(defaultBase||meta.filename||"map")||"map";
     if(hasHostAPI){
       const dirPath = await pickHostPath({
@@ -3597,16 +3670,20 @@ export default function Nav2MapEditor() {
       await hostAPI.writeFile(dirPath.endsWith(".pgm")?dirPath:`${dir}/${baseName}.pgm`, canvasToPGM(c), null);
       await hostAPI.writeFile(`${dir}/${baseName}.yaml`, writeYAML(meta,baseName), "utf-8");
       await hostAPI.writeFile(`${dir}/${baseName}_semantic.json`, buildSemanticJSON(), "utf-8");
-      return {baseName};
+      const mapPath = `${dir}/${baseName}.yaml`;
+      syncWorkspaceMapPath(mapPath);
+      setStatus(`💾 저장 완료: ${baseName}.pgm · .yaml · _semantic.json`);
+      return { dir, baseName, mapPath, semanticPath: `${dir}/${baseName}_semantic.json` };
     } else {
       await nativeSave(`${fallbackBase}.pgm`, [{ name: "PGM", extensions: ["pgm"] }], canvasToPGM(c), null, pickHostPath);
       const yblob=new Blob([writeYAML(meta,fallbackBase)],{type:"text/plain"});
       const ya=document.createElement("a");ya.href=URL.createObjectURL(yblob);ya.download=`${fallbackBase}.yaml`;ya.click();
       const jblob=new Blob([buildSemanticJSON()],{type:"application/json"});
       const ja=document.createElement("a");ja.href=URL.createObjectURL(jblob);ja.download=`${fallbackBase}_semantic.json`;ja.click();
+      setStatus("💾 전체 저장 완료 (PGM + YAML + JSON)");
       return {baseName:fallbackBase};
     }
-  },[buildSemanticJSON,meta,pickHostPath]);
+  },[buildSemanticJSON,meta,pickHostPath,syncWorkspaceMapPath]);
 
   const saveAll=async ()=>{
     const saved=await saveMapBundle(meta.filename);
@@ -3639,6 +3716,70 @@ export default function Nav2MapEditor() {
     }
   },[saveMapBundle,slamMapStats,slamRunning,slamSaveName,nav2Running]);
 
+  const chooseLaunchFile=useCallback(async()=>{
+    if(!hostAPI?.openFileDialog){setStatus("⚠ launch 파일 선택은 Electron 또는 robot backend에서만 가능합니다");return;}
+    const selected=await pickWorkspacePath({
+      title:"launch 파일 선택",
+      filters:[{name:"Launch files",extensions:["py"]},{name:"All files",extensions:["*"]}],
+      properties:["openFile"],
+    });
+    if(!selected)return;
+    const launchPath=Array.isArray(selected)?selected[0]:selected;
+    let detectedArgName="";
+    try{
+      detectedArgName=inferLaunchMapArgName(await hostAPI.readFile(launchPath,"utf-8"));
+    }catch(_){}
+    setWorkspaceSync(prev=>({
+      ...prev,
+      launchPath,
+      argName: detectedArgName || prev.argName || "map",
+      workspaceRoot: prev.workspaceRoot || inferWorkspaceRootFromLaunchPath(launchPath),
+      packageName: prev.packageName || inferPackageNameFromLaunchPath(launchPath),
+    }));
+    setStatus(`✅ launch 선택: ${basenameFromPath(launchPath)}`);
+  },[pickWorkspacePath]);
+
+  const chooseWorkspaceRoot=useCallback(async()=>{
+    const selected=await pickWorkspacePath({
+      title:"ROS2 워크스페이스 선택",
+      properties:["openDirectory"],
+    });
+    if(!selected)return;
+    const root=Array.isArray(selected)?selected[0]:selected;
+    setWorkspaceSync(prev=>({...prev,workspaceRoot:root}));
+    setStatus(`✅ 워크스페이스 선택: ${root}`);
+  },[pickWorkspacePath]);
+
+  const syncLaunchAndBuild=useCallback(async()=>{
+    if(!hostAPI?.updateLaunchMap||!hostAPI?.buildWorkspace){
+      setStatus("⚠ launch 갱신/빌드는 Electron 또는 robot backend에서만 가능합니다");
+      return;
+    }
+    const launchPath=workspaceSync.launchPath.trim();
+    const mapPath=(workspaceSync.mapPath||"").trim();
+    const argName=(workspaceSync.argName||"map").trim()||"map";
+    const workspaceRoot=(workspaceSync.workspaceRoot||inferWorkspaceRootFromLaunchPath(launchPath)).trim();
+    const packageName=(workspaceSync.packageName||inferPackageNameFromLaunchPath(launchPath)).trim();
+    if(!launchPath){setStatus("⚠ launch 파일을 먼저 선택하세요");return;}
+    if(!mapPath){setStatus("⚠ 먼저 맵을 저장해서 YAML 경로를 확보하세요");return;}
+    if(!workspaceRoot){setStatus("⚠ ROS2 워크스페이스 루트를 선택하세요");return;}
+    setWorkspaceBusy(true);
+    try{
+      setStatus("🛠 launch 파일의 map 경로를 갱신 중...");
+      const updateResult=await hostAPI.updateLaunchMap({launchPath,mapPath,argName});
+      setStatus(updateResult?.changed?`🛠 launch 갱신 완료: ${basenameFromPath(launchPath)}`:"ℹ launch 파일은 이미 최신 상태입니다");
+      setStatus(`🏗 빌드 중: ${packageName||"workspace"}`);
+      const buildResult=await hostAPI.buildWorkspace({cwd:workspaceRoot,packageName:packageName||""});
+      setStatus(`✅ 빌드 완료: ${packageName||basenameFromPath(workspaceRoot||"workspace")}`);
+      return {updateResult,buildResult};
+    }catch(err){
+      setStatus(`⚠ launch/빌드 실패: ${err.message}`);
+      return null;
+    }finally{
+      setWorkspaceBusy(false);
+    }
+  },[hostAPI,workspaceSync]);
+
   const fitView=()=>{
     const c=canvasRef.current,vp=vpRef.current;if(!c||!vp)return;
     const z=Math.min((vp.clientWidth-60)/c.width,(vp.clientHeight-60)/c.height,3);
@@ -3661,6 +3802,9 @@ export default function Nav2MapEditor() {
   };
 
   const onOpenClick = hasHostAPI ? handleNativeOpen : undefined;
+  const workspaceAvailable = hasHostAPI && mapLoaded;
+  const effectiveWorkspaceRoot = (workspaceSync.workspaceRoot || inferWorkspaceRootFromLaunchPath(workspaceSync.launchPath)).trim();
+  const canSyncWorkspace = workspaceAvailable && !!workspaceSync.launchPath.trim() && !!workspaceSync.mapPath.trim() && !!effectiveWorkspaceRoot && !workspaceBusy;
 
   return(
     <div style={{display:"flex",flexDirection:"column",height:"100vh",background:"#050d1a",color:"#8eb8c8",fontFamily:"'JetBrains Mono','Fira Code',monospace",fontSize:12,overflow:"hidden"}}>
@@ -3680,6 +3824,7 @@ export default function Nav2MapEditor() {
           <div style={{width:1,height:16,background:"rgba(0,212,255,0.15)"}}/>
           <button style={{...btn(),opacity:mapLoaded?1:.4}} onClick={saveAll} disabled={!mapLoaded}>💾 전체저장</button>
           <button style={{...btn(),opacity:mapLoaded?1:.4}} onClick={savePGM} disabled={!mapLoaded}>⬇ PGM</button>
+          <button style={{...btn(showWorkspaceDlg),opacity:workspaceAvailable?1:.4}} onClick={()=>setShowWorkspaceDlg(v=>!v)} disabled={!workspaceAvailable}>🔗 launch·build</button>
           <div style={{width:1,height:16,background:"rgba(0,212,255,0.15)"}}/>
           <button style={btn()} onClick={undo} title="Ctrl+Z">↩</button>
           <button style={btn()} onClick={redo} title="Ctrl+Y">↪</button>
@@ -4025,6 +4170,7 @@ export default function Nav2MapEditor() {
             slamMapStats={slamMapStats}
             onPickGoalTool={()=>{setActiveTab("semantic");setTool("semGoal");setShowSemPanel(true);}}
             onPickSelectTool={()=>{setActiveTab("semantic");setTool("semSelect");setShowSemPanel(true);}}
+            onOpenWorkspaceSync={()=>setShowWorkspaceDlg(true)}
           />
         )}
 
@@ -4105,6 +4251,62 @@ export default function Nav2MapEditor() {
           </label>
           <div style={{display:"flex",justifyContent:"flex-end"}}>
             <button style={{...btn(true),borderColor:"#00d4ff",color:"#00d4ff"}} onClick={()=>setShowMetaDlg(false)}>확인</button>
+          </div>
+        </div></div>
+      )}
+
+      {/* ── WORKSPACE SYNC DIALOG ── */}
+      {showWorkspaceDlg&&(
+        <div style={MODAL}><div style={{...MBOX,minWidth:520,maxWidth:680,width:"min(680px,92vw)"}}>
+          <h3 style={{margin:"0 0 16px",color:"#00d4ff",letterSpacing:1}}>🔗 launch map 갱신 + 빌드</h3>
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            <label style={{display:"flex",flexDirection:"column",gap:4}}>
+              <span style={{fontSize:10,color:"rgba(0,212,255,0.5)"}}>launch 파일</span>
+              <div style={{display:"flex",gap:6}}>
+                <input value={workspaceSync.launchPath} onChange={e=>setWorkspaceSync(prev=>({...prev,launchPath:e.target.value}))}
+                  placeholder="/home/nvidia/rby1_nav2/launch/example.launch.py"
+                  style={{...INPUT,flex:1,minWidth:0}}/>
+                <button style={btn()} onClick={chooseLaunchFile} disabled={workspaceBusy}>찾기</button>
+              </div>
+            </label>
+            <label style={{display:"flex",flexDirection:"column",gap:4}}>
+              <span style={{fontSize:10,color:"rgba(0,212,255,0.5)"}}>맵 YAML 경로</span>
+              <input value={workspaceSync.mapPath} onChange={e=>setWorkspaceSync(prev=>({...prev,mapPath:e.target.value}))}
+                placeholder={"저장 후 자동 입력됩니다"}
+                style={{...INPUT,width:"100%",boxSizing:"border-box"}}/>
+            </label>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+              <label style={{display:"flex",flexDirection:"column",gap:4}}>
+                <span style={{fontSize:10,color:"rgba(0,212,255,0.5)"}}>launch arg 이름</span>
+                <input value={workspaceSync.argName} onChange={e=>setWorkspaceSync(prev=>({...prev,argName:e.target.value}))}
+                  placeholder="map"
+                  style={{...INPUT,width:"100%",boxSizing:"border-box"}}/>
+              </label>
+              <label style={{display:"flex",flexDirection:"column",gap:4}}>
+                <span style={{fontSize:10,color:"rgba(0,212,255,0.5)"}}>package 이름</span>
+                <input value={workspaceSync.packageName} onChange={e=>setWorkspaceSync(prev=>({...prev,packageName:e.target.value}))}
+                  placeholder="rby1_nav2"
+                  style={{...INPUT,width:"100%",boxSizing:"border-box"}}/>
+              </label>
+            </div>
+            <label style={{display:"flex",flexDirection:"column",gap:4}}>
+              <span style={{fontSize:10,color:"rgba(0,212,255,0.5)"}}>ROS2 워크스페이스 루트</span>
+              <div style={{display:"flex",gap:6}}>
+                <input value={workspaceSync.workspaceRoot} onChange={e=>setWorkspaceSync(prev=>({...prev,workspaceRoot:e.target.value}))}
+                  placeholder="/home/nvidia/rby1_nav2"
+                  style={{...INPUT,flex:1,minWidth:0}}/>
+                <button style={btn()} onClick={chooseWorkspaceRoot} disabled={workspaceBusy}>찾기</button>
+              </div>
+            </label>
+            <div style={{fontSize:10,color:"rgba(0,212,255,0.3)",lineHeight:1.7,padding:"8px 10px",background:"rgba(0,212,255,0.04)",borderRadius:5}}>
+              저장한 YAML 경로를 launch 파일의 <b>LaunchConfiguration default</b> 또는 <b>default_value</b>로 다시 쓰고, 지정한 워크스페이스에서 <b>colcon build</b>를 실행합니다.
+            </div>
+          </div>
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:18}}>
+            <button style={btn()} onClick={()=>setShowWorkspaceDlg(false)} disabled={workspaceBusy}>닫기</button>
+            <button style={{...btn(true),borderColor:"#00d4ff",color:"#00d4ff",opacity:canSyncWorkspace?1:.45}} onClick={syncLaunchAndBuild} disabled={!canSyncWorkspace}>
+              {workspaceBusy?"처리 중...":"launch 갱신 + 빌드"}
+            </button>
           </div>
         </div></div>
       )}

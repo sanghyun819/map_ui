@@ -41,6 +41,171 @@ function rosSetupCommand() {
   return 'if [ -n "$ROS_DISTRO" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then source "/opt/ros/$ROS_DISTRO/setup.bash"; elif ! command -v ros2 >/dev/null 2>&1; then for setup in /opt/ros/*/setup.bash; do [ -f "$setup" ] && source "$setup" && break; done; fi';
 }
 
+function shellQuote(value) {
+  return `'${String(value ?? "").replace(/'/g, `'"'"'`)}'`;
+}
+
+function runShellCommand(command, options = {}) {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    const child = spawn("bash", ["-lc", command], {
+      cwd: options.cwd || process.cwd(),
+      env: { ...process.env, ...(options.env || {}) },
+      detached: false,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.on("data", data => { stdout += data.toString(); });
+    child.stderr.on("data", data => { stderr += data.toString(); });
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      if (code === 0) {
+        resolve({ code, signal, stdout, stderr });
+        return;
+      }
+      const tail = (stderr || stdout).trim().split(/\r?\n/).slice(-3).join("\n");
+      const error = new Error(`command failed with code ${code}${signal ? ` signal ${signal}` : ""}${tail ? `: ${tail}` : ""}`);
+      error.code = code;
+      error.signal = signal;
+      error.stdout = stdout;
+      error.stderr = stderr;
+      reject(error);
+    });
+  });
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function findCallEnd(source, openParenIndex) {
+  let depth = 0;
+  let quote = "";
+  let escaped = false;
+  for (let i = openParenIndex; i < source.length; i += 1) {
+    const ch = source[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (ch === "\"" || ch === "'") {
+      quote = ch;
+    } else if (ch === "(") {
+      depth += 1;
+    } else if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function firstStringArg(callText, callName) {
+  const match = callText.match(new RegExp(`^${escapeRegExp(callName)}\\s*\\(\\s*(['"])(.*?)\\1`, "s"));
+  return match?.[2] || "";
+}
+
+function findValueEnd(callText, valueStart) {
+  let depth = 0;
+  let quote = "";
+  let escaped = false;
+  for (let i = valueStart; i < callText.length; i += 1) {
+    const ch = callText[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (ch === "\"" || ch === "'") {
+      quote = ch;
+    } else if (ch === "(" || ch === "[" || ch === "{") {
+      depth += 1;
+    } else if (ch === ")" || ch === "]" || ch === "}") {
+      if (depth === 0) return i;
+      depth -= 1;
+    } else if (ch === "," && depth === 0) {
+      return i;
+    }
+  }
+  return callText.length;
+}
+
+function replaceKeywordValue(callText, keyword, quotedValue) {
+  const match = new RegExp(`\\b${escapeRegExp(keyword)}\\s*=`).exec(callText);
+  if (!match) return { text: callText, changed: false };
+  let valueStart = match.index + match[0].length;
+  while (/\s/.test(callText[valueStart] || "")) valueStart += 1;
+  const valueEnd = findValueEnd(callText, valueStart);
+  if (valueEnd <= valueStart) return { text: callText, changed: false };
+  const nextText = `${callText.slice(0, valueStart)}${quotedValue}${callText.slice(valueEnd)}`;
+  return { text: nextText, changed: nextText !== callText };
+}
+
+function replaceCallKeywordForArg(text, callName, argName, keyword, quotedValue) {
+  const callPattern = new RegExp(`${escapeRegExp(callName)}\\s*\\(`, "g");
+  let result = "";
+  let cursor = 0;
+  let count = 0;
+  let match;
+  while ((match = callPattern.exec(text))) {
+    const openParenIndex = text.indexOf("(", match.index);
+    const closeParenIndex = findCallEnd(text, openParenIndex);
+    if (closeParenIndex < 0) break;
+    const callText = text.slice(match.index, closeParenIndex + 1);
+    if (firstStringArg(callText, callName) === argName) {
+      const replaced = replaceKeywordValue(callText, keyword, quotedValue);
+      if (replaced.changed) {
+        result += text.slice(cursor, match.index) + replaced.text;
+        cursor = closeParenIndex + 1;
+        count += 1;
+      }
+    }
+    callPattern.lastIndex = closeParenIndex + 1;
+  }
+  return count ? { text: result + text.slice(cursor), count } : { text, count: 0 };
+}
+
+function updateLaunchMapText(text, mapPath, argName = "map") {
+  const normalized = String(mapPath || "").replace(/\\/g, "/");
+  if (!normalized) return text;
+  const quotedMapPath = JSON.stringify(normalized);
+  let updated = String(text || "");
+  let changed = 0;
+  for (const [callName, keyword] of [
+    ["LaunchConfiguration", "default"],
+    ["DeclareLaunchArgument", "default_value"],
+  ]) {
+    const result = replaceCallKeywordForArg(updated, callName, argName, keyword, quotedMapPath);
+    updated = result.text;
+    changed += result.count;
+  }
+  return changed ? updated : text;
+}
+
+function buildWorkspaceCommand(options = {}) {
+  const custom = String(options.command || "").trim();
+  if (custom) return custom;
+  const packages = Array.isArray(options.packages)
+    ? options.packages
+    : String(options.packageName || "")
+        .split(",")
+        .map(part => part.trim())
+        .filter(Boolean);
+  const packageArgs = packages.length ? ` --packages-select ${packages.map(shellQuote).join(" ")}` : "";
+  return `colcon build${packageArgs}`;
+}
+
 function stopProcessGroup(proc) {
   if (!proc) return false;
   try {
@@ -321,6 +486,27 @@ ipcMain.handle("fs:readFile", async (event, filePath, encoding) => {
 ipcMain.handle("fs:writeFile", async (event, filePath, data, encoding) => {
   fs.writeFileSync(filePath, data, encoding || "utf-8");
   return true;
+});
+
+ipcMain.handle("workspace:updateLaunchMap", async (event, options = {}) => {
+  const launchPath = options.launchPath;
+  const mapPath = options.mapPath;
+  if (!launchPath) throw new Error("launchPath is required");
+  if (!mapPath) throw new Error("mapPath is required");
+  const text = fs.readFileSync(launchPath, "utf-8");
+  const argName = options.argName || "map";
+  const updated = updateLaunchMapText(text, mapPath, argName);
+  if (updated !== text) {
+    fs.writeFileSync(launchPath, updated, "utf-8");
+  }
+  return { launchPath, mapPath, argName, changed: updated !== text };
+});
+
+ipcMain.handle("workspace:build", async (event, options = {}) => {
+  const cwd = options.cwd || process.cwd();
+  const command = buildWorkspaceCommand(options);
+  const result = await runShellCommand(`${rosSetupCommand()}; exec ${command}`, { cwd });
+  return { cwd, command, ...result };
 });
 
 // Read directory

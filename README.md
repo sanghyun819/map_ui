@@ -138,6 +138,7 @@ It intentionally exposes robot-PC file access and ROS command execution to the w
 3. Edit occupancy pixels using the edit tools.
 4. Use the semantic tools to add map areas, rooms, carriers, objects, start pose, waypoints, and goals.
 5. Save everything with full export, or save only the semantic JSON.
+6. Use the `launch·build` control to update a ROS2 launch file's map launch argument path and run `colcon build` in the target workspace.
 
 Electron/robot-backend mode can automatically load a sibling semantic file:
 
