@@ -159,9 +159,25 @@ async function nativeOpen(filters, pickPath) {
 // ─── Nav2 pixel constants ──────────────────────────────────────────────────────
 const PX_OCCUPIED = 0, PX_FREE = 254, PX_UNKNOWN = 205;
 const SNAP_RADIUS = 10;
-const START_POSE_ID = "nav2_start";
+const START_TASKS = ["HRI","PnP","GPSR","DL","Restaurant"];
+const DEFAULT_START_TASK = START_TASKS[0];
 const QUICK_MAP_DIR = "/home/nvidia/rby1_nav2/install/rby1_nav2/share/rby1_nav2/maps";
 const QUICK_MAP_NAMES = {1:"map_first",2:"map_second"};
+const DEFAULT_WORKSPACE_ROOT = "/home/nvidia/rby1_nav2";
+const DEFAULT_MAP_SEARCH_DIR = "/home/nvidia/rby1_nav2/src/rby1_nav2/maps";
+
+function startTaskFromId(startPoses,id){
+  const value=String(id||"");
+  return Object.entries(startPoses||{}).find(([,pose])=>pose?.id===value)?.[0]||null;
+}
+function nextStartPoseId(startPoses){
+  const used=new Set(Object.values(startPoses||{}).map(p=>p?.id).filter(Boolean));
+  let max=-1;
+  used.forEach(id=>{const m=String(id).match(/^s(\d+)$/);if(m)max=Math.max(max,Number(m[1]));});
+  let i=max+1;
+  while(used.has(`s${i}`))i++;
+  return `s${i}`;
+}
 
 // ─── Semantic type definitions ─────────────────────────────────────────────────
 const MAP_TYPES = [
@@ -1176,10 +1192,12 @@ function CommitInput({value,onCommit,style,...props}) {
 }
 
 // ─── Semantic panel (4-level hierarchy: map > room > carrier > object) ───────
-function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameGoalId,setWaypoints,onImportJSON,onImportFile,onExportJSON,toWorld,resolution,typeOptions}) {
+function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,startPoses,startTasks,selectedStartTask,setSelectedStartTask,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameGoalId,onRenameStartPoseId,setWaypoints,onImportJSON,onImportFile,onExportJSON,toWorld,resolution,typeOptions}) {
   const res=resolution||0.05;
   const [expanded,setExpanded]=useState({});
   const toggle=(id)=>setExpanded(p=>({...p,[id]:!p[id]}));
+  const startPoseCount=Object.values(startPoses||{}).filter(Boolean).length;
+  const currentStartId=startPose?.id||"";
 
   const insidePoly=(poly,obj)=>{
     if(!poly)return false;
@@ -1386,10 +1404,10 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,se
   return(
     <div style={{width:260,background:"#070f1e",borderLeft:"1px solid rgba(0,212,255,0.12)",display:"flex",flexDirection:"column",flexShrink:0}}>
       <div style={{padding:"9px 14px",borderBottom:"1px solid rgba(0,212,255,0.12)",color:"#00d4ff",fontWeight:"bold",letterSpacing:1,fontSize:12,display:"flex",justifyContent:"space-between"}}>
-        <span>🗺 시맨틱 레이어</span><span style={{opacity:.4,fontSize:10}}>{maps.length}맵·{rooms.length}방·{carriers.length}캐·{objects.length}객·{goals.length}골·{waypoints.length}WP{startPose?"·시작":""}</span>
+        <span>🗺 시맨틱 레이어</span><span style={{opacity:.4,fontSize:10}}>{maps.length}맵·{rooms.length}방·{carriers.length}캐·{objects.length}객·{goals.length}골·{waypoints.length}WP{startPoseCount?`·시작${startPoseCount}`:""}</span>
       </div>
       <div style={{flex:1,overflow:"auto",padding:8}}>
-        {maps.length===0&&rooms.length===0&&carriers.length===0&&objects.length===0&&waypoints.length===0&&goals.length===0&&!startPose&&(
+        {maps.length===0&&rooms.length===0&&carriers.length===0&&objects.length===0&&waypoints.length===0&&goals.length===0&&!startPoseCount&&(
           <div style={{color:"rgba(0,212,255,0.22)",textAlign:"center",padding:"24px 8px",lineHeight:2.2,fontSize:11}}>
             시맨틱 항목 없음<br/>
             <span style={{fontSize:10,opacity:.7}}>맵→방→캐리어→객체 · S:시작점 · 9:골 · W:웨이포인트</span>
@@ -1440,25 +1458,45 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,se
         )}
       </div>
       {/* ── Start pose section ── */}
-      {startPose&&(
+      {(startPose||startPoseCount>0)&&(
         <div style={{borderTop:"1px solid rgba(0,230,118,0.16)",marginTop:4}}>
           <div style={{padding:"6px 10px 4px",fontSize:10,color:"#00e676",letterSpacing:1,fontWeight:"bold"}}>⌂ NAV2 START</div>
-          <div onClick={()=>setSelId(selId===START_POSE_ID?null:START_POSE_ID)} style={{
+          <div style={{display:"flex",gap:4,alignItems:"center",margin:"0 8px 5px"}} onClick={e=>e.stopPropagation()}>
+            <span style={{fontSize:9,color:"rgba(0,230,118,0.55)",whiteSpace:"nowrap"}}>task</span>
+            <select value={selectedStartTask} onChange={e=>{setSelectedStartTask(e.target.value);setSelId(startPoses?.[e.target.value]?.id||null);}}
+              style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}>
+              {startTasks.map(task=><option key={task} value={task}>{task}</option>)}
+            </select>
+          </div>
+          {startPose?(
+          <div onClick={()=>setSelId(selId===currentStartId?null:currentStartId)} style={{
             margin:"0 8px 4px",padding:"5px 8px",borderRadius:5,cursor:"pointer",
-            background:selId===START_POSE_ID?"rgba(0,230,118,0.1)":"rgba(255,255,255,0.02)",
-            border:selId===START_POSE_ID?"1px solid rgba(0,230,118,0.45)":"1px solid rgba(0,230,118,0.12)",
+            background:selId===currentStartId?"rgba(0,230,118,0.1)":"rgba(255,255,255,0.02)",
+            border:selId===currentStartId?"1px solid rgba(0,230,118,0.45)":"1px solid rgba(0,230,118,0.12)",
           }}>
             <div style={{display:"flex",alignItems:"center",gap:5}}>
               <span style={{fontSize:12,color:"#00e676"}}>⌂</span>
               <div style={{flex:1,minWidth:0}}>
-                <div style={{color:"#00e676",fontWeight:"bold",fontSize:11}}>Nav2 start pose</div>
+                <div style={{color:"#00e676",fontWeight:"bold",fontSize:11}}>{startPose.id}: {selectedStartTask}</div>
                 <div style={{color:"rgba(0,230,118,0.48)",fontSize:9}}>
                   {(()=>{const w=toWorld(startPose.x,startPose.y);return `(${w.x}, ${w.y})m`;})()} · {Math.round(startPose.theta*180/Math.PI)}°
                 </div>
               </div>
-              <button onClick={ev=>{ev.stopPropagation();onDeleteStart();}} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
+              <button onClick={ev=>{ev.stopPropagation();onDeleteStart(selectedStartTask);}} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
             </div>
+            {selId===currentStartId&&(
+              <div style={{marginTop:5,display:"flex",alignItems:"center",gap:4}} onClick={e=>e.stopPropagation()}>
+                <span style={{fontSize:9,color:"rgba(0,230,118,0.5)",whiteSpace:"nowrap"}}>ID</span>
+                <CommitInput value={startPose.id||""} onCommit={next=>onRenameStartPoseId?.(selectedStartTask,next)}
+                  style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}/>
+              </div>
+            )}
           </div>
+          ):(
+            <div style={{margin:"0 8px 4px",padding:"6px 8px",borderRadius:5,background:"rgba(255,255,255,0.02)",border:"1px solid rgba(0,230,118,0.12)",color:"rgba(0,230,118,0.42)",fontSize:10}}>
+              선택한 task 시작점 없음
+            </div>
+          )}
         </div>
       )}
       {/* ── Goals section ── */}
@@ -1737,7 +1775,7 @@ function SlamModePanel({
               </button>
               {hasHostAPI&&(
                 <button style={{...btn(),justifyContent:"center",marginTop:2}} onClick={onOpenWorkspaceSync}>
-                  🔗 launch·build
+                  🏗 빌드
                 </button>
               )}
             </>
@@ -1816,7 +1854,9 @@ export default function Nav2MapEditor() {
   const [zoom,        setZoom]        = useState(1);
   const [pan,         setPan]         = useState({x:50,y:50});
   const [rotation,    setRotation]    = useState(0); // degrees
-  const [startPose,   setStartPose]   = useState(null);
+  const [selectedStartTask,setSelectedStartTask]=useState(DEFAULT_START_TASK);
+  const [startPoses,  setStartPoses]  = useState({});
+  const startPose = startPoses[selectedStartTask]||null;
   const [waypoints,   setWaypoints]   = useState([]);
   const [selWpIdx,    setSelWpIdx]    = useState(null);
   const [mapLoaded,   setMapLoaded]   = useState(false);
@@ -1895,10 +1935,26 @@ export default function Nav2MapEditor() {
     launchPath: "",
     mapPath: "",
     argName: "map",
-    workspaceRoot: "",
-    packageName: "",
+    workspaceRoot: DEFAULT_WORKSPACE_ROOT,
+    packageName: "rby1_nav2",
   });
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
+
+  const setStartPoseForTask=useCallback((task,updater)=>{
+    const key=START_TASKS.includes(task)?task:DEFAULT_START_TASK;
+    setStartPoses(prev=>{
+      const current=prev[key]||null;
+      const next=typeof updater==="function"?updater(current):updater;
+      const out={...prev};
+      if(!next) delete out[key];
+      else out[key]={...next,id:next.id||current?.id||nextStartPoseId(prev),task:key,label:key};
+      return out;
+    });
+  },[]);
+
+  const setActiveStartPose=useCallback((updater)=>{
+    setStartPoseForTask(selectedStartTask,updater);
+  },[selectedStartTask,setStartPoseForTask]);
 
   const pickHostPath=useCallback((options={})=>{
     if(hostAPI?.isRobotBackend&&hostAPI?.browseDir){
@@ -1928,8 +1984,8 @@ export default function Nav2MapEditor() {
     setWorkspaceSync(prev=>({
       ...prev,
       mapPath,
-      workspaceRoot: prev.workspaceRoot || inferWorkspaceRootFromLaunchPath(prev.launchPath) || inferWorkspaceRootFromPackagePath(mapPath),
-      packageName: prev.packageName || inferPackageNameFromLaunchPath(prev.launchPath) || inferPackageNameFromPackagePath(mapPath),
+      workspaceRoot: prev.workspaceRoot || DEFAULT_WORKSPACE_ROOT,
+      packageName: prev.packageName || inferPackageNameFromPackagePath(mapPath) || "rby1_nav2",
     }));
   },[]);
 
@@ -2006,14 +2062,16 @@ export default function Nav2MapEditor() {
   const roomsRef    = useRef(rooms);
   const carriersRef = useRef(carriers);
   const objectsRef  = useRef(objects);
-  const startPoseRef= useRef(startPose);
+  const startPosesRef= useRef(startPoses);
+  const selectedStartTaskRef= useRef(selectedStartTask);
   const waypointsRef= useRef(waypoints);
   const goalsRef    = useRef(goals);
   useEffect(()=>{mapsRef.current=maps;},[maps]);
   useEffect(()=>{roomsRef.current=rooms;},[rooms]);
   useEffect(()=>{carriersRef.current=carriers;},[carriers]);
   useEffect(()=>{objectsRef.current=objects;},[objects]);
-  useEffect(()=>{startPoseRef.current=startPose;},[startPose]);
+  useEffect(()=>{startPosesRef.current=startPoses;},[startPoses]);
+  useEffect(()=>{selectedStartTaskRef.current=selectedStartTask;},[selectedStartTask]);
   useEffect(()=>{waypointsRef.current=waypoints;},[waypoints]);
   useEffect(()=>{goalsRef.current=goals;},[goals]);
 
@@ -2021,14 +2079,14 @@ export default function Nav2MapEditor() {
     const c=canvasRef.current;if(!c)return;
     const d=c.getContext("2d").getImageData(0,0,c.width,c.height);
     const copy=new ImageData(new Uint8ClampedArray(d.data),d.width,d.height);
-    const snap={img:copy, maps:[...mapsRef.current], rooms:[...roomsRef.current], carriers:[...carriersRef.current], objects:[...objectsRef.current], startPose:startPoseRef.current?{...startPoseRef.current}:null, waypoints:[...waypointsRef.current], goals:[...goalsRef.current]};
+    const snap={img:copy, maps:[...mapsRef.current], rooms:[...roomsRef.current], carriers:[...carriersRef.current], objects:[...objectsRef.current], startPoses:{...startPosesRef.current}, selectedStartTask:selectedStartTaskRef.current, waypoints:[...waypointsRef.current], goals:[...goalsRef.current]};
     histRef.current=histRef.current.slice(0,histIdxRef.current+1);
     histRef.current.push(snap);if(histRef.current.length>40)histRef.current.shift();
     histIdxRef.current=histRef.current.length-1;
   },[]);
   const restoreSnap=useCallback((snap)=>{
     canvasRef.current?.getContext("2d").putImageData(snap.img,0,0);
-    setMaps(snap.maps||[]);setRooms(snap.rooms);setCarriers(snap.carriers);setObjects(snap.objects);setStartPose(snap.startPose||null);setWaypoints(snap.waypoints);setGoals(snap.goals||[]);
+    setMaps(snap.maps||[]);setRooms(snap.rooms);setCarriers(snap.carriers);setObjects(snap.objects);setStartPoses(snap.startPoses||{});setSelectedStartTask(snap.selectedStartTask||DEFAULT_START_TASK);setWaypoints(snap.waypoints);setGoals(snap.goals||[]);
   },[]);
   const undoingRef=useRef(false); // prevent snapshot during undo/redo restore
   const draggingRef=useRef(false); // prevent snapshot during drag-move
@@ -2043,7 +2101,7 @@ export default function Nav2MapEditor() {
     // Skip initial mount (saveSnap is called in initCanvas/loadPGMData)
     if(semVersionRef.current===0){semVersionRef.current=1;return;}
     saveSnap();
-  },[maps,rooms,carriers,objects,startPose,waypoints,goals]); // eslint-disable-line react-hooks/exhaustive-deps
+  },[maps,rooms,carriers,objects,startPoses,selectedStartTask,waypoints,goals]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Init canvas ──
   const initCanvas=useCallback((w,h,fillV=PX_UNKNOWN)=>{
@@ -2051,7 +2109,7 @@ export default function Nav2MapEditor() {
     c.width=w;c.height=h;
     c.getContext("2d").fillStyle=`rgb(${fillV},${fillV},${fillV})`;c.getContext("2d").fillRect(0,0,w,h);
     setCanvasSize({w,h});histRef.current=[];histIdxRef.current=-1;saveSnap();
-    setMapLoaded(true);setMaps([]);setStartPose(null);setWaypoints([]);setRooms([]);setCarriers([]);setObjects([]);setGoals([]);setPolyVerts([]);setRotation(0);
+    setMapLoaded(true);setMaps([]);setStartPoses({});setWaypoints([]);setRooms([]);setCarriers([]);setObjects([]);setGoals([]);setPolyVerts([]);setRotation(0);
     _mIdx=0;_rIdx=0;_cIdx=0;_oIdx=0;_wIdx=0;_gIdx=0;
     const vp=vpRef.current;
     if(vp){const z=Math.min((vp.clientWidth-60)/w,(vp.clientHeight-60)/h,3);setZoom(z);setPan({x:(vp.clientWidth-w*z)/2,y:(vp.clientHeight-h*z)/2});}
@@ -2133,7 +2191,7 @@ export default function Nav2MapEditor() {
   const reprojectSemanticForMap = useCallback((fromMeta, fromSize, toMeta, toSize)=>{
     if(!fromMeta||!toMeta||!fromSize?.h||!toSize?.h)return;
     if(sameMapProjection(fromMeta,fromSize,toMeta,toSize))return;
-    const hasSemantic=mapsRef.current.length||roomsRef.current.length||carriersRef.current.length||objectsRef.current.length||goalsRef.current.length||waypointsRef.current.length||startPoseRef.current;
+    const hasSemantic=mapsRef.current.length||roomsRef.current.length||carriersRef.current.length||objectsRef.current.length||goalsRef.current.length||waypointsRef.current.length||Object.keys(startPosesRef.current||{}).length;
     if(!hasSemantic)return;
     slamReprojectingRef.current=true;
     setMaps(p=>p.map(item=>reprojectShapeItem(item,fromMeta,fromSize,toMeta,toSize)));
@@ -2142,7 +2200,7 @@ export default function Nav2MapEditor() {
     setObjects(p=>p.map(item=>reprojectShapeItem(item,fromMeta,fromSize,toMeta,toSize)));
     setWaypoints(p=>p.map(item=>reprojectPoseItem(item,fromMeta,fromSize,toMeta,toSize)));
     setGoals(p=>p.map(item=>reprojectPoseItem(item,fromMeta,fromSize,toMeta,toSize)));
-    setStartPose(p=>p?reprojectPoseItem(p,fromMeta,fromSize,toMeta,toSize):p);
+    setStartPoses(p=>Object.fromEntries(Object.entries(p||{}).map(([task,pose])=>[task,reprojectPoseItem(pose,fromMeta,fromSize,toMeta,toSize)])));
   },[]);
 
   const applySlamMapMessage = useCallback((msg)=>{
@@ -2311,34 +2369,40 @@ export default function Nav2MapEditor() {
       }
     });
 
-    // ── Draw Nav2 start pose ──
-    if(startPose){
-      const isSel=selSemId===START_POSE_ID;
-      const isHov=hov===START_POSE_ID;
-      const isDragging=!!startDragRef.current;
-      const sColor=isDragging?"#00ff88":isSel?"#00e676":"#36d399";
-      const len=16,ax=startPose.x+.5+Math.cos(startPose.theta)*len,ay=startPose.y+.5-Math.sin(startPose.theta)*len;
+    // ── Draw task-specific Nav2 start poses ──
+    START_TASKS.forEach(task=>{
+      const pose=startPoses[task];if(!pose)return;
+      const id=pose.id;
+      const isSel=selSemId===id;
+      const isHov=hov===id;
+      const isActive=selectedStartTask===task;
+      const isDragging=!!startDragRef.current&&startDragRef.current.task===task;
+      const sColor=isDragging?"#00ff88":isSel||isActive?"#00e676":"#36d399";
+      const len=isActive?16:12,ax=pose.x+.5+Math.cos(pose.theta)*len,ay=pose.y+.5-Math.sin(pose.theta)*len;
       ctx.save();
-      ctx.shadowColor=sColor;ctx.shadowBlur=isDragging?8:isSel?7:4;
-      ctx.beginPath();ctx.moveTo(startPose.x+.5,startPose.y+.5);ctx.lineTo(ax,ay);
-      ctx.strokeStyle=sColor;ctx.lineWidth=isSel?2:1.4;ctx.setLineDash([]);ctx.stroke();
-      const ang=Math.atan2(-(ay-(startPose.y+.5)),ax-(startPose.x+.5));
+      ctx.globalAlpha=isActive?1:.55;
+      ctx.shadowColor=sColor;ctx.shadowBlur=isDragging?8:isSel?7:3;
+      ctx.beginPath();ctx.moveTo(pose.x+.5,pose.y+.5);ctx.lineTo(ax,ay);
+      ctx.strokeStyle=sColor;ctx.lineWidth=isSel||isActive?2:1.2;ctx.setLineDash([]);ctx.stroke();
+      const ang=Math.atan2(-(ay-(pose.y+.5)),ax-(pose.x+.5));
       ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(ax-5*Math.cos(ang-.5),ay+5*Math.sin(ang-.5));ctx.lineTo(ax-5*Math.cos(ang+.5),ay+5*Math.sin(ang+.5));ctx.closePath();
       ctx.fillStyle=sColor;ctx.fill();
-      ctx.beginPath();ctx.arc(startPose.x+.5,startPose.y+.5,isSel?5:4,0,Math.PI*2);
+      ctx.beginPath();ctx.arc(pose.x+.5,pose.y+.5,isSel||isActive?5:4,0,Math.PI*2);
       ctx.fillStyle=sColor;ctx.fill();ctx.strokeStyle="#fff";ctx.lineWidth=0.8;ctx.stroke();
-      ctx.shadowBlur=0;ctx.font="bold 6px monospace";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillStyle="#00140a";ctx.fillText("S",startPose.x+.5,startPose.y+.5);
+      ctx.shadowBlur=0;ctx.font="bold 6px monospace";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillStyle="#00140a";ctx.fillText(task[0],pose.x+.5,pose.y+.5);
       if(isDragging){
-        const deg=Math.round(startPose.theta*180/Math.PI);
+        const deg=Math.round(pose.theta*180/Math.PI);
         ctx.font="bold 7px monospace";ctx.fillStyle="#00ff88";ctx.textAlign="left";ctx.textBaseline="top";
-        ctx.fillText(`${deg}°`,startPose.x+len+2,startPose.y-7);
-      } else if(isSel||isHov){
+        ctx.fillText(`${deg}°`,pose.x+len+2,pose.y-7);
+      } else if(isSel||isHov||isActive){
+        const label=`START ${task}`;
         ctx.font="bold 5px monospace";ctx.textAlign="left";ctx.textBaseline="top";
-        ctx.fillStyle=hexRgba("#000010",.75);ctx.fillRect(startPose.x+7,startPose.y-4,38,9);
-        ctx.fillStyle="#00e676";ctx.fillText("START",startPose.x+9,startPose.y-3);
+        const lm=ctx.measureText(label);
+        ctx.fillStyle=hexRgba("#000010",.75);ctx.fillRect(pose.x+7,pose.y-4,lm.width+4,9);
+        ctx.fillStyle="#00e676";ctx.fillText(label,pose.x+9,pose.y-3);
       }
       ctx.restore();
-    }
+    });
 
     // ── Draw waypoints ──
     const wpDragging=wpDragRef.current;
@@ -2483,7 +2547,7 @@ export default function Nav2MapEditor() {
         ctx.restore();
       }
     }
-  },[maps,rooms,carriers,objects,startPose,waypoints,goals,selWpIdx,selSemId,semOpacity,polySnap,tool,drawRos2,typeOptions]);
+  },[maps,rooms,carriers,objects,startPoses,selectedStartTask,waypoints,goals,selWpIdx,selSemId,semOpacity,polySnap,tool,drawRos2,typeOptions]);
 
   useEffect(()=>{drawOverlayRef.current=drawOverlay;},[drawOverlay]);
   useEffect(()=>{drawOverlay();},[drawOverlay]);
@@ -2561,9 +2625,13 @@ export default function Nav2MapEditor() {
     // ── Semantic select (with drag-move) ──
     if(tool==="semSelect"){
       const START_HIT_R=8;
-      if(startPose&&Math.hypot(pt.x-startPose.x,pt.y-startPose.y)<=START_HIT_R){
-        setSelSemId(START_POSE_ID);setSelWpIdx(null);
-        dragRef.current={id:START_POSE_ID, layer:"startPose", startPt:{x:pt.x,y:pt.y}};
+      const hitStart=START_TASKS.map(task=>({task,pose:startPoses[task]})).filter(x=>x.pose).reverse()
+        .find(({pose})=>Math.hypot(pt.x-pose.x,pt.y-pose.y)<=START_HIT_R);
+      if(hitStart){
+        const id=hitStart.pose.id;
+        setSelectedStartTask(hitStart.task);
+        setSelSemId(id);setSelWpIdx(null);
+        dragRef.current={id, task:hitStart.task, layer:"startPose", startPt:{x:pt.x,y:pt.y}};
         return;
       }
       // Check waypoints first (small targets, priority)
@@ -2602,12 +2670,13 @@ export default function Nav2MapEditor() {
     // ── Nav2 start pose ──
     if(tool==="startPose"){
       if(inBounds(pt)){
-        const newStart={id:START_POSE_ID,x:pt.x,y:pt.y,theta:0,label:"Nav2 start pose"};
-        startDragRef.current={id:START_POSE_ID};
+        const newId=startPoses[selectedStartTask]?.id||nextStartPoseId(startPoses);
+        const newStart={id:newId,task:selectedStartTask,x:pt.x,y:pt.y,theta:0,label:selectedStartTask};
+        startDragRef.current={id:newId,task:selectedStartTask};
         isDrawing.current=true; shapeStart.current=pt;
-        setStartPose(newStart);
-        setSelSemId(START_POSE_ID);setSelWpIdx(null);
-        setStatus("⌂ 드래그하여 Nav2 시작 방향 지정");
+        setStartPoseForTask(selectedStartTask,newStart);
+        setSelSemId(newId);setSelWpIdx(null);
+        setStatus(`⌂ ${selectedStartTask} 시작점 방향 지정`);
       }
       return;
     }
@@ -2634,7 +2703,7 @@ export default function Nav2MapEditor() {
     isDrawing.current=true;shapeStart.current=pt;lastPt.current=pt;
     if(["line","rect","circle"].includes(tool)){const c=canvasRef.current;snapRef.current=c.getContext("2d").getImageData(0,0,c.width,c.height);}
     if((tool==="brush"||tool==="eraser")&&inBounds(pt)){const c=canvasRef.current;paintDot(c.getContext("2d"),pt.x,pt.y,tool==="eraser"?brushSz*2:brushSz,tool==="eraser"?PX_FREE:drawColor);}
-  },[tool,drawColor,brushSz,toXY,saveSnap,finishPolygon,maps,rooms,carriers,objects,startPose,waypoints,goals,mapLoaded,slamMode]);
+  },[tool,drawColor,brushSz,toXY,saveSnap,finishPolygon,maps,rooms,carriers,objects,startPoses,selectedStartTask,setStartPoseForTask,waypoints,goals,mapLoaded,slamMode]);
 
   // ── Double click → close polygon ──
   const onDblClick=useCallback((e)=>{
@@ -2662,7 +2731,7 @@ export default function Nav2MapEditor() {
       if(Math.abs(dx)<2&&Math.abs(dy)<2)return; // deadzone
       d.startPt={x:cx,y:cy};
       draggingRef.current=true;
-      if(d.layer==="startPose") setStartPose(p=>p?{...p,x:p.x+dx,y:p.y+dy}:p);
+      if(d.layer==="startPose") setStartPoseForTask(d.task,p=>p?{...p,x:p.x+dx,y:p.y+dy}:p);
       else if(d.layer==="waypoint") setWaypoints(p=>p.map((wp,i)=>i===d.wpIdx?{...wp,x:wp.x+dx,y:wp.y+dy}:wp));
       else if(d.layer==="goal") setGoals(p=>p.map(g=>g.id===d.id?{...g,x:g.x+dx,y:g.y+dy}:g));
       else if(d.layer==="map") setMaps(p=>p.map(m=>m.id===d.id?moveShape(m,dx,dy):m));
@@ -2680,7 +2749,7 @@ export default function Nav2MapEditor() {
 
     // Hover detection for semantic labels (priority: goals > objects > carriers > rooms)
     {
-      const hit=(startPose&&Math.hypot(cx-startPose.x,cy-startPose.y)<=8?{id:START_POSE_ID}:null)
+      const hit=START_TASKS.map(task=>({id:startPoses[task]?.id,pose:startPoses[task]})).filter(x=>x.pose&&x.id).reverse().find(({pose})=>Math.hypot(cx-pose.x,cy-pose.y)<=8)
         || [...goals].reverse().find(g=>Math.hypot(cx-g.x,cy-g.y)<=6)
         || [...objects].reverse().find(s=>hitTestShape(s,cx,cy))
         || [...carriers].reverse().find(s=>hitTestShape(s,cx,cy))
@@ -2705,7 +2774,7 @@ export default function Nav2MapEditor() {
       if(Math.hypot(dx,dy)>3){
         const theta=Math.atan2(-dy,dx);
         draggingRef.current=true;
-        setStartPose(p=>p?{...p,theta}:p);
+        setActiveStartPose(p=>p?{...p,theta}:p);
       }
       return;
     }
@@ -2749,7 +2818,7 @@ export default function Nav2MapEditor() {
       ctx.putImageData(snapRef.current,0,0);drawShapePreview(ctx,shapeStart.current.x,shapeStart.current.y,pt.x,pt.y,e.shiftKey,tool);
     }
     lastPt.current=pt;
-  },[tool,drawColor,brushSz,toXY,screenToCanvas,drawOverlay,maps,rooms,carriers,objects,startPose,goals]);
+  },[tool,drawColor,brushSz,toXY,screenToCanvas,drawOverlay,maps,rooms,carriers,objects,startPoses,setStartPoseForTask,setActiveStartPose,goals]);
 
   // ── Mouse Up ──
   const onMouseUp=useCallback((e)=>{
@@ -2770,7 +2839,7 @@ export default function Nav2MapEditor() {
       const s=shapeStart.current;
       startDragRef.current=null; shapeStart.current=null;
       draggingRef.current=false;
-      if(s) setStatus(`⌂ Nav2 시작점 (${s.x},${s.y})`);
+      if(s) setStatus(`⌂ ${selectedStartTask} 시작점 (${s.x},${s.y})`);
       setTimeout(saveSnap,0);
       return;
     }
@@ -2809,7 +2878,7 @@ export default function Nav2MapEditor() {
       }
     }
     snapRef.current=null;shapeStart.current=null;
-  },[tool,saveSnap]);
+  },[tool,saveSnap,selectedStartTask]);
 
   const onMouseLeave=useCallback(()=>{setCursor(v=>({...v,vis:false}));if(hoverSemRef.current){hoverSemRef.current=null;drawOverlay();}onMouseUp();},[onMouseUp,drawOverlay]);
 
@@ -2929,8 +2998,10 @@ export default function Nav2MapEditor() {
       return;
     }
     if(!selSemId)return;
-    if(selSemId===START_POSE_ID){
-      setStartPose(null);
+    const selectedStartTaskById=startTaskFromId(startPoses,selSemId);
+    if(selectedStartTaskById){
+      const task=selectedStartTaskById||selectedStartTask;
+      setStartPoseForTask(task,null);
       setSelSemId(null);
       return;
     }
@@ -2940,7 +3011,7 @@ export default function Nav2MapEditor() {
     setObjects(p=>p.filter(o=>o.id!==selSemId));
     setGoals(p=>p.filter(g=>g.id!==selSemId));
     setSelSemId(null);
-  },[selSemId,selWpIdx]);
+  },[selSemId,selWpIdx,selectedStartTask,startPoses,setStartPoseForTask]);
 
   // ── Keyboard ──
   useEffect(()=>{
@@ -3000,7 +3071,7 @@ export default function Nav2MapEditor() {
       for(let i=0;i<width*height;i++){id.data[i*4]=id.data[i*4+1]=id.data[i*4+2]=data[i];id.data[i*4+3]=255;}
       ctx.putImageData(id,0,0);
       setCanvasSize({w:width,h:height});histRef.current=[];histIdxRef.current=-1;saveSnap();
-      setMapLoaded(true);setStartPose(null);setWaypoints([]);setPolyVerts([]);
+      setMapLoaded(true);setStartPoses({});setWaypoints([]);setPolyVerts([]);
       setMeta(m=>({...m,filename:name.replace(/\.pgm$/i,"")}));
       setStatus(`✅ 로드: ${width}×${height}px`);
       const vp=vpRef.current;
@@ -3120,9 +3191,20 @@ export default function Nav2MapEditor() {
           return shape?{...base,...shape}:null;
         })
         .filter(Boolean);
-      const startRaw=data.start_pose||data.startPose||data.initial_pose||data.initialPose;
-      const startPoint=getPosePoint(startRaw);
-      const nextStart=startRaw&&startPoint?{id:START_POSE_ID,label:startRaw.label||"Nav2 start pose",x:startPoint.x,y:startPoint.y,theta:thetaFromSemanticPose(startRaw)}:null;
+      const importStartPose=(raw,task=DEFAULT_START_TASK)=>{
+        const p=getPosePoint(raw);
+        if(!raw||!p)return null;
+        const key=START_TASKS.includes(task)?task:DEFAULT_START_TASK;
+        return{id:String(raw.id||nextStartPoseId(nextStartPoses)),task:key,label:key,x:p.x,y:p.y,theta:thetaFromSemanticPose(raw)};
+      };
+      const nextStartPoses={};
+      const startPosesRaw=Array.isArray(data.start_poses)?data.start_poses:[];
+      startPosesRaw.forEach((raw,i)=>{
+        const task=raw?.task||START_TASKS[i]||DEFAULT_START_TASK;
+        const pose=importStartPose(raw,task);
+        if(pose)nextStartPoses[pose.task]=pose;
+      });
+      const nextSelectedStartTask=START_TASKS.find(task=>nextStartPoses[task])||selectedStartTask||DEFAULT_START_TASK;
       const nextWaypoints=(Array.isArray(data.waypoints)?data.waypoints:[])
         .map((wp,i)=>{
           const p=getPosePoint(wp);
@@ -3143,7 +3225,7 @@ export default function Nav2MapEditor() {
       const next={maps:nextMaps,rooms:nextRooms,carriers:nextCarriers,objects:nextObjects,waypoints:nextWaypoints,goals:nextGoals};
       syncSemanticCounters(next);
       setMaps(nextMaps);setRooms(nextRooms);setCarriers(nextCarriers);setObjects(nextObjects);
-      setStartPose(nextStart);setWaypoints(nextWaypoints);setGoals(nextGoals);
+      setStartPoses(nextStartPoses);setSelectedStartTask(nextSelectedStartTask);setWaypoints(nextWaypoints);setGoals(nextGoals);
       setSelSemId(null);setSelWpIdx(null);setPolyVerts([]);setPolySnap(false);
       setActiveTab("semantic");setTool("semSelect");setShowSemPanel(true);
       const metaPatch={};
@@ -3151,7 +3233,7 @@ export default function Nav2MapEditor() {
       if(Array.isArray(semMeta.origin)&&semMeta.origin.length>=2)metaPatch.origin=sourceOrigin;
       const semanticBase=jsonName.replace(/_semantic\.json$/i,"").replace(/\.json$/i,"");
       setMeta(m=>({...m,...metaPatch,filename:(m.filename==="map"&&semanticBase)?semanticBase:m.filename}));
-      const count=nextMaps.length+nextRooms.length+nextCarriers.length+nextObjects.length+nextWaypoints.length+nextGoals.length+(nextStart?1:0);
+      const count=nextMaps.length+nextRooms.length+nextCarriers.length+nextObjects.length+nextWaypoints.length+nextGoals.length+Object.keys(nextStartPoses).length;
       setTimeout(()=>{saveSnap();drawOverlayRef.current?.();},0);
       setStatus(`✅ 시맨틱 로드: ${jsonName} (${count}개 항목)`);
       return true;
@@ -3159,7 +3241,7 @@ export default function Nav2MapEditor() {
       setStatus(`⚠ semantic JSON 오류: ${err.message}`);
       return false;
     }
-  },[meta,canvasSize,initCanvas,saveSnap,typeOptions]);
+  },[meta,canvasSize,initCanvas,saveSnap,typeOptions,selectedStartTask]);
 
   const tryAutoLoadSemantic=useCallback(async(dir,baseName,options={})=>{
     if(!hostAPI?.readFile||!dir||!baseName)return false;
@@ -3369,7 +3451,7 @@ export default function Nav2MapEditor() {
   },[meta,canvasSize.h]);
 
   const publishInitialPose=useCallback(()=>{
-    if(!startPose){setStatus("⚠ Nav2 시작점을 먼저 지정하세요");return;}
+    if(!startPose){setStatus(`⚠ ${selectedStartTask} 시작점을 먼저 지정하세요`);return;}
     if(ros2State!==ROS2_STATES.CONNECTED){setStatus("⚠ ROS2 연결 후 시작점을 전송할 수 있습니다");return;}
     const pos=toWorld(startPose.x,startPose.y);
     const qz=Math.sin(startPose.theta/2),qw=Math.cos(startPose.theta/2);
@@ -3389,8 +3471,8 @@ export default function Nav2MapEditor() {
         covariance,
       },
     });
-    setStatus(`📡 Nav2 시작점 전송: (${pos.x}, ${pos.y})m · ${Math.round(startPose.theta*180/Math.PI)}°`);
-  },[startPose,ros2State,ros2Bridge,ros2Frames.fixed,toWorld]);
+    setStatus(`📡 ${selectedStartTask} 시작점 전송: (${pos.x}, ${pos.y})m · ${Math.round(startPose.theta*180/Math.PI)}°`);
+  },[startPose,selectedStartTask,ros2State,ros2Bridge,ros2Frames.fixed,toWorld]);
 
   const robotPoseToCanvas=useCallback(()=>{
     if(!mapLoaded){setStatus("⚠ 맵을 먼저 여세요");return null;}
@@ -3406,9 +3488,10 @@ export default function Nav2MapEditor() {
     const pose=robotPoseToCanvas();
     if(!pose)return;
     if(kind==="start"){
-      setStartPose({id:START_POSE_ID,label:"Nav2 start pose",...pose});
-      setSelSemId(START_POSE_ID);setSelWpIdx(null);
-      setStatus("⌂ 현재 로봇 pose를 Nav2 시작점으로 지정");
+      const newId=startPoses[selectedStartTask]?.id||nextStartPoseId(startPoses);
+      setStartPoseForTask(selectedStartTask,{id:newId,task:selectedStartTask,label:selectedStartTask,...pose});
+      setSelSemId(newId);setSelWpIdx(null);
+      setStatus(`⌂ 현재 로봇 pose를 ${selectedStartTask} 시작점으로 지정`);
     }else if(kind==="waypoint"){
       const newId=wuid();
       const wp={id:newId,label:newId,...pose};
@@ -3424,7 +3507,7 @@ export default function Nav2MapEditor() {
       setStatus(`🎯 현재 로봇 pose를 시맨틱 골로 추가${hitRoom?` (${hitRoom.label})`:""}`);
     }
     setTimeout(saveSnap,0);
-  },[robotPoseToCanvas,saveSnap]);
+  },[robotPoseToCanvas,saveSnap,selectedStartTask,startPoses,setStartPoseForTask]);
 
   const startRosbridge=useCallback(async()=>{
     if(!hostAPI?.rosbridgeStart){setStatus("⚠ rosbridge 실행은 Electron 또는 robot backend에서만 가능합니다");return;}
@@ -3641,15 +3724,18 @@ export default function Nav2MapEditor() {
     const poseJson=(pose)=>{
       const pos=tw(pose.x,pose.y);
       const qz=Math.sin(pose.theta/2),qw=Math.cos(pose.theta/2);
-      return{label:pose.label||"Nav2 start pose",
+      return{id:pose.id,label:pose.label||pose.task||"start",
         position:{x:+pos.x,y:+pos.y,z:0.0},
         orientation:{x:0,y:0,z:+qz.toFixed(5),w:+qw.toFixed(5)},
         theta_rad:+pose.theta.toFixed(4),
         _pixel:{x:pose.x,y:pose.y}};
     };
+    const startPoseItems=START_TASKS
+      .filter(task=>startPoses[task])
+      .map(task=>({...poseJson(startPoses[task]),task,label:task}));
     return JSON.stringify({
       metadata:{resolution:meta.resolution,origin:meta.origin,image_size:{w:canvasSize.w,h:canvasSize.h},created:new Date().toISOString()},
-      start_pose:startPose?poseJson(startPose):null,
+      start_poses:startPoseItems,
       maps:maps.map(m=>{
         const poly=shapeToPoly(m)||[];
         const bb=poly.length?polyBBox(poly):{x:m.x,y:m.y,x2:m.x+(m.w||0),y2:m.y+(m.h||0)};
@@ -3701,7 +3787,7 @@ export default function Nav2MapEditor() {
           _pixel:{x:g.x,y:g.y}};
       })
     },null,2);
-  },[maps,rooms,carriers,objects,startPose,waypoints,goals,meta,canvasSize,toWorld]);
+  },[maps,rooms,carriers,objects,startPoses,waypoints,goals,meta,canvasSize,toWorld]);
 
   const saveMapBundle=useCallback(async(defaultBase=meta.filename)=>{
     const c=canvasRef.current;if(!c)return null;
@@ -3798,32 +3884,23 @@ export default function Nav2MapEditor() {
     }
   },[saveMapBundle,slamMapStats,slamRunning,slamSaveName,nav2Running]);
 
-  const chooseLaunchFile=useCallback(async()=>{
-    if(!hostAPI?.openFileDialog){setStatus("⚠ launch 파일 선택은 Electron 또는 robot backend에서만 가능합니다");return;}
+  const chooseMapYamlPath=useCallback(async()=>{
     const selected=await pickWorkspacePath({
-      title:"launch 파일 선택",
-      filters:[{name:"Launch files",extensions:["py"]},{name:"All files",extensions:["*"]}],
+      title:"맵 YAML 선택",
+      defaultPath: DEFAULT_MAP_SEARCH_DIR,
+      filters:[{name:"YAML",extensions:["yaml","yml"]},{name:"All files",extensions:["*"]}],
       properties:["openFile"],
     });
     if(!selected)return;
-    const launchPath=Array.isArray(selected)?selected[0]:selected;
-    let detectedArgName="";
-    try{
-      detectedArgName=inferLaunchMapArgName(await hostAPI.readFile(launchPath,"utf-8"));
-    }catch(_){}
-    setWorkspaceSync(prev=>({
-      ...prev,
-      launchPath,
-      argName: detectedArgName || prev.argName || "map",
-      workspaceRoot: prev.workspaceRoot || inferWorkspaceRootFromLaunchPath(launchPath),
-      packageName: prev.packageName || inferPackageNameFromLaunchPath(launchPath),
-    }));
-    setStatus(`✅ launch 선택: ${basenameFromPath(launchPath)}`);
+    const mapPath=Array.isArray(selected)?selected[0]:selected;
+    setWorkspaceSync(prev=>({...prev,mapPath}));
+    setStatus(`✅ 맵 YAML 선택: ${basenameFromPath(mapPath)}`);
   },[pickWorkspacePath]);
 
   const chooseWorkspaceRoot=useCallback(async()=>{
     const selected=await pickWorkspacePath({
       title:"ROS2 워크스페이스 선택",
+      defaultPath: DEFAULT_WORKSPACE_ROOT,
       properties:["openDirectory"],
     });
     if(!selected)return;
@@ -3832,30 +3909,22 @@ export default function Nav2MapEditor() {
     setStatus(`✅ 워크스페이스 선택: ${root}`);
   },[pickWorkspacePath]);
 
-  const syncLaunchAndBuild=useCallback(async()=>{
-    if(!hostAPI?.updateLaunchMap||!hostAPI?.buildWorkspace){
-      setStatus("⚠ launch 갱신/빌드는 Electron 또는 robot backend에서만 가능합니다");
+  const buildWorkspaceOnly=useCallback(async()=>{
+    if(!hostAPI?.buildWorkspace){
+      setStatus("⚠ 빌드는 Electron 또는 robot backend에서만 가능합니다");
       return;
     }
-    const launchPath=workspaceSync.launchPath.trim();
-    const mapPath=(workspaceSync.mapPath||"").trim();
-    const argName=(workspaceSync.argName||"map").trim()||"map";
-    const workspaceRoot=(workspaceSync.workspaceRoot||inferWorkspaceRootFromLaunchPath(launchPath)).trim();
-    const packageName=(workspaceSync.packageName||inferPackageNameFromLaunchPath(launchPath)).trim();
-    if(!launchPath){setStatus("⚠ launch 파일을 먼저 선택하세요");return;}
-    if(!mapPath){setStatus("⚠ 먼저 맵을 저장해서 YAML 경로를 확보하세요");return;}
+    const workspaceRoot=(workspaceSync.workspaceRoot||DEFAULT_WORKSPACE_ROOT).trim();
+    const packageName=(workspaceSync.packageName||"rby1_nav2").trim();
     if(!workspaceRoot){setStatus("⚠ ROS2 워크스페이스 루트를 선택하세요");return;}
     setWorkspaceBusy(true);
     try{
-      setStatus("🛠 launch 파일의 map 경로를 갱신 중...");
-      const updateResult=await hostAPI.updateLaunchMap({launchPath,mapPath,argName});
-      setStatus(updateResult?.changed?`🛠 launch 갱신 완료: ${basenameFromPath(launchPath)}`:"ℹ launch 파일은 이미 최신 상태입니다");
       setStatus(`🏗 빌드 중: ${packageName||"workspace"}`);
       const buildResult=await hostAPI.buildWorkspace({cwd:workspaceRoot,packageName:packageName||""});
       setStatus(`✅ 빌드 완료: ${packageName||basenameFromPath(workspaceRoot||"workspace")}`);
-      return {updateResult,buildResult};
+      return buildResult;
     }catch(err){
-      setStatus(`⚠ launch/빌드 실패: ${err.message}`);
+      setStatus(`⚠ 빌드 실패: ${err.message}`);
       return null;
     }finally{
       setWorkspaceBusy(false);
@@ -3884,9 +3953,11 @@ export default function Nav2MapEditor() {
   };
 
   const onOpenClick = hasHostAPI ? handleNativeOpen : undefined;
-  const workspaceAvailable = hasHostAPI && mapLoaded;
-  const effectiveWorkspaceRoot = (workspaceSync.workspaceRoot || inferWorkspaceRootFromLaunchPath(workspaceSync.launchPath)).trim();
-  const canSyncWorkspace = workspaceAvailable && !!workspaceSync.launchPath.trim() && !!workspaceSync.mapPath.trim() && !!effectiveWorkspaceRoot && !workspaceBusy;
+  const workspaceAvailable = hasHostAPI;
+  const effectiveWorkspaceRoot = (workspaceSync.workspaceRoot || DEFAULT_WORKSPACE_ROOT).trim();
+  const canSyncWorkspace = workspaceAvailable && !!effectiveWorkspaceRoot && !workspaceBusy;
+  const startPoseCount=Object.values(startPoses||{}).filter(Boolean).length;
+  const semanticItemCount=maps.length+rooms.length+carriers.length+objects.length+goals.length+waypoints.length+startPoseCount;
 
   return(
     <div style={{display:"flex",flexDirection:"column",height:"100vh",background:"#050d1a",color:"#8eb8c8",fontFamily:"'JetBrains Mono','Fira Code',monospace",fontSize:12,overflow:"hidden"}}>
@@ -3918,32 +3989,14 @@ export default function Nav2MapEditor() {
             title={`${QUICK_MAP_DIR}/map_second.yaml 덮어쓰기 + map_second_semantic.json Thor 복사`}
           >{quickSaveBusy===2?"2번 저장 중":"2번맵 저장"}</button>
           <button style={{...btn(),opacity:mapLoaded?1:.4}} onClick={savePGM} disabled={!mapLoaded}>⬇ PGM</button>
-          <button style={{...btn(showWorkspaceDlg),opacity:workspaceAvailable?1:.4}} onClick={()=>setShowWorkspaceDlg(v=>!v)} disabled={!workspaceAvailable}>🔗 launch·build</button>
+          <button style={{...btn(showWorkspaceDlg),opacity:workspaceAvailable?1:.4}} onClick={()=>setShowWorkspaceDlg(v=>!v)} disabled={!workspaceAvailable}>🏗 빌드</button>
           <div style={{width:1,height:16,background:"rgba(0,212,255,0.15)"}}/>
           <button style={btn()} onClick={undo} title="Ctrl+Z">↩</button>
           <button style={btn()} onClick={redo} title="Ctrl+Y">↪</button>
           <button style={btn()} onClick={fitView}>⊞</button>
           <div style={{width:1,height:16,background:"rgba(0,212,255,0.15)"}}/>
           <button style={btn()} onClick={()=>setShowMetaDlg(true)}>⚙ 메타</button>
-          <div style={{flex:"1 1 180px"}}/>
-          <div style={{display:"flex",alignItems:"center",gap:5,marginLeft:"auto",flexWrap:"wrap",justifyContent:"flex-end"}}>
-            <button style={btn(showSemPanel)} onClick={()=>setShowSemPanel(v=>!v)}>🗺 시맨틱{(maps.length+rooms.length+carriers.length+objects.length+goals.length+waypoints.length+(startPose?1:0))>0&&` (${maps.length+rooms.length+carriers.length+objects.length+goals.length+waypoints.length+(startPose?1:0)})`}</button>
-            <button style={btn(showCatalogPanel)} onClick={()=>setShowCatalogPanel(v=>!v)}>📋 MD목록 ({catalogCounts(semanticCatalog).rooms}/{catalogCounts(semanticCatalog).locations}/{catalogCounts(semanticCatalog).objects})</button>
-            <button style={btn(showRos2Panel)} onClick={()=>setShowRos2Panel(v=>!v)}>🤖 ROS2{ros2State===ROS2_STATES.CONNECTED&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
-            <button style={btn(showSlamPanel||slamMode)} onClick={()=>setShowSlamPanel(v=>!v)}>🧭 SLAM{slamMode&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
-            <button style={btn(show3DView)} onClick={()=>setShow3DView(v=>!v)}>🧊 3D</button>
-            {show3DView&&(
-              <div style={{display:"flex",gap:4,alignItems:"center",marginLeft:2}}>
-                {[["free","Free"],["top","Top"]].map(([id,l])=>(
-                  <button key={id} style={{...btn(view3DMode===id),padding:"2px 7px",fontSize:10}} onClick={()=>setView3DMode(id)}>{l}</button>
-                ))}
-              </div>
-            )}
-            <span style={{color:"rgba(0,212,255,0.3)",fontSize:10}}>줌 {Math.round(zoom*100)}%{rotation%360!==0&&` · ${rotation%360}°`}</span>
-          </div>
-        </div>
-
-        <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap",paddingTop:2,borderTop:"1px solid rgba(0,212,255,0.06)"}}>
+          <div style={{width:1,height:16,background:"rgba(0,212,255,0.15)"}}/>
           <span style={{fontSize:10,color:"rgba(0,212,255,0.38)",letterSpacing:1,marginRight:2}}>ROS2</span>
           {hasHostAPI&&(
             rosbridgeRunning?(
@@ -3956,11 +4009,10 @@ export default function Nav2MapEditor() {
             style={{...btn(),opacity:startPose&&ros2State===ROS2_STATES.CONNECTED?1:.4}}
             onClick={publishInitialPose}
             disabled={!startPose||ros2State!==ROS2_STATES.CONNECTED}
-            title="지정한 시작점을 /initialpose로 publish해서 Nav2/AMCL 위치 추정 초기값을 설정합니다. 로봇 이동 명령은 아닙니다."
-          >📡 시작점→Nav2</button>
+            title="선택한 task의 시작점을 /initialpose로 publish해서 Nav2/AMCL 위치 추정 초기값을 설정합니다. 로봇 이동 명령은 아닙니다."
+          >📡 {selectedStartTask}→Nav2</button>
           {hasHostAPI&&(
             <>
-              <div style={{width:1,height:16,background:"rgba(0,212,255,0.12)",margin:"0 2px"}}/>
               <button style={btn(!!bagPath)} onClick={chooseBagPath} title={bagPath||"ROS2 bag 폴더 선택"}>🎞 {bagPath?basenameFromPath(bagPath):"Bag"}</button>
               <label style={{display:"inline-flex",alignItems:"center",gap:3,color:"#6a9aaa",fontSize:10}}>
                 <input type="checkbox" checked={bagLoop} onChange={e=>setBagLoop(e.target.checked)} style={{width:12,height:12,accentColor:"#00d4ff"}}/>
@@ -3981,7 +4033,7 @@ export default function Nav2MapEditor() {
                 onMouseUp={e=>seekBagTo(parseFloat(e.currentTarget.value)||0)}
                 onTouchEnd={e=>seekBagTo(parseFloat(e.currentTarget.value)||0)}
                 disabled={!bagPath||bagBusy}
-                style={{width:180,accentColor:"#00d4ff",opacity:bagPath&&!bagBusy?1:.4}} title="bag timeline"/>
+                style={{width:150,accentColor:"#00d4ff",opacity:bagPath&&!bagBusy?1:.4}} title="bag timeline"/>
               <span style={{fontSize:10,color:"rgba(0,212,255,0.4)",minWidth:44}}>{Math.round(bagOffset)}s{bagDuration>0?`/${Math.round(bagDuration)}s`:""}</span>
               {bagRunning&&(
                 bagPaused?(
@@ -4004,6 +4056,22 @@ export default function Nav2MapEditor() {
               <button style={{...btn(),padding:"1px 7px",fontSize:10,color:"#00ff88",borderColor:"rgba(0,255,100,0.4)"}} onClick={()=>polyVerts.length>=3&&finishPolygon([...polyVerts])} disabled={polyVerts.length<3}>완성(Enter)</button>
             </div>
           )}
+          <div style={{flex:"1 1 180px"}}/>
+          <div style={{display:"flex",alignItems:"center",gap:5,marginLeft:"auto",flexWrap:"wrap",justifyContent:"flex-end"}}>
+            <button style={btn(showSemPanel)} onClick={()=>setShowSemPanel(v=>!v)}>🗺 시맨틱{semanticItemCount>0&&` (${semanticItemCount})`}</button>
+            <button style={btn(showCatalogPanel)} onClick={()=>setShowCatalogPanel(v=>!v)}>📋 MD목록 ({catalogCounts(semanticCatalog).rooms}/{catalogCounts(semanticCatalog).locations}/{catalogCounts(semanticCatalog).objects})</button>
+            <button style={btn(showRos2Panel)} onClick={()=>setShowRos2Panel(v=>!v)}>🤖 ROS2{ros2State===ROS2_STATES.CONNECTED&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
+            <button style={btn(showSlamPanel||slamMode)} onClick={()=>setShowSlamPanel(v=>!v)}>🧭 SLAM{slamMode&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
+            <button style={btn(show3DView)} onClick={()=>setShow3DView(v=>!v)}>🧊 3D</button>
+            {show3DView&&(
+              <div style={{display:"flex",gap:4,alignItems:"center",marginLeft:2}}>
+                {[["free","Free"],["top","Top"]].map(([id,l])=>(
+                  <button key={id} style={{...btn(view3DMode===id),padding:"2px 7px",fontSize:10}} onClick={()=>setView3DMode(id)}>{l}</button>
+                ))}
+              </div>
+            )}
+            <span style={{color:"rgba(0,212,255,0.3)",fontSize:10}}>줌 {Math.round(zoom*100)}%{rotation%360!==0&&` · ${rotation%360}°`}</span>
+          </div>
         </div>
       </div>
 
@@ -4064,6 +4132,16 @@ export default function Nav2MapEditor() {
               </div>
             ))}
             <div style={{width:"80%",height:1,background:"rgba(0,212,255,0.1)",margin:"5px 0"}}/>
+            <div style={{width:"100%",boxSizing:"border-box",padding:"0 3px 5px",display:"flex",flexDirection:"column",gap:3}}>
+              <span style={{fontSize:10,color:"rgba(0,230,118,0.58)",fontWeight:"bold",textAlign:"center"}}>시작 task</span>
+              <select
+                value={selectedStartTask}
+                onChange={e=>{setSelectedStartTask(e.target.value);setSelSemId(startPoses[e.target.value]?.id||null);setSelWpIdx(null);}}
+                style={{...INPUT,width:"100%",boxSizing:"border-box",padding:"3px 4px",fontSize:10}}
+              >
+                {START_TASKS.map(task=><option key={task} value={task}>{task}</option>)}
+              </select>
+            </div>
             {SEM_EXTRA_TOOLS.map(t=>{
               const captureKind=SEM_CAPTURE_KINDS[t.id];
               const canCapture=mapLoaded&&ros2State===ROS2_STATES.CONNECTED;
@@ -4291,7 +4369,9 @@ export default function Nav2MapEditor() {
         {/* ── SEMANTIC PANEL (rooms + carriers + objects + waypoints) ── */}
         {showSemPanel&&(
           <SemanticPanel
-            maps={maps} rooms={rooms} carriers={carriers} objects={objects} waypoints={waypoints} goals={goals} startPose={startPose}
+            maps={maps} rooms={rooms} carriers={carriers} objects={objects} waypoints={waypoints} goals={goals}
+            startPose={startPose} startPoses={startPoses} startTasks={START_TASKS}
+            selectedStartTask={selectedStartTask} setSelectedStartTask={setSelectedStartTask}
             selId={selSemId} setSelId={setSelSemId}
             selWpIdx={selWpIdx} setSelWpIdx={setSelWpIdx}
             onDeleteMap={id=>{setMaps(p=>p.filter(m=>m.id!==id));if(selSemId===id)setSelSemId(null);}}
@@ -4300,7 +4380,7 @@ export default function Nav2MapEditor() {
             onDeleteObj={id=>{setObjects(p=>p.filter(o=>o.id!==id));if(selSemId===id)setSelSemId(null);}}
             onDeleteWp={i=>{setWaypoints(p=>p.filter((_,j)=>j!==i));if(selWpIdx===i)setSelWpIdx(null);}}
             onDeleteGoal={id=>{setGoals(p=>p.filter(g=>g.id!==id));if(selSemId===id)setSelSemId(null);}}
-            onDeleteStart={()=>{setStartPose(null);if(selSemId===START_POSE_ID)setSelSemId(null);}}
+            onDeleteStart={task=>{setStartPoseForTask(task||selectedStartTask,null);if(startTaskFromId(startPoses,selSemId))setSelSemId(null);}}
             onReassign={(layer,id,field,value)=>{
               if(layer==="room") setRooms(p=>p.map(r=>r.id===id?{...r,[field]:value}:r));
               else if(layer==="carrier") setCarriers(p=>p.map(c=>c.id===id?{...c,[field]:value}:c));
@@ -4317,6 +4397,25 @@ export default function Nav2MapEditor() {
               setGoals(p=>p.map(g=>g.id===oldId?{...g,id:nextId}:g));
               if(selSemId===oldId)setSelSemId(nextId);
               setStatus(`🎯 골 ID 변경: ${oldId} → ${nextId}`);
+              return true;
+            }}
+            onRenameStartPoseId={(task,nextRaw)=>{
+              const key=START_TASKS.includes(task)?task:selectedStartTask;
+              const oldId=startPoses[key]?.id||"";
+              const nextId=String(nextRaw||"").trim();
+              if(!nextId){setStatus("⚠ 시작점 ID는 비워둘 수 없습니다");return false;}
+              const usedIds=[
+                ...maps.map(m=>m.id),...rooms.map(r=>r.id),...carriers.map(c=>c.id),...objects.map(o=>o.id),
+                ...goals.map(g=>g.id),...waypoints.map((wp,i)=>wp.id||`w${i+1}`),
+                ...Object.entries(startPoses).filter(([t])=>t!==key).map(([,p])=>p?.id).filter(Boolean),
+              ];
+              if(usedIds.includes(nextId)){
+                setStatus(`⚠ 이미 있는 ID: ${nextId}`);
+                return false;
+              }
+              setStartPoseForTask(key,p=>p?{...p,id:nextId,label:key}:p);
+              if(selSemId===oldId)setSelSemId(nextId);
+              setStatus(`⌂ 시작점 ID 변경: ${oldId} → ${nextId}`);
               return true;
             }}
             setWaypoints={setWaypoints}
@@ -4385,54 +4484,40 @@ export default function Nav2MapEditor() {
       {/* ── WORKSPACE SYNC DIALOG ── */}
       {showWorkspaceDlg&&(
         <div style={MODAL}><div style={{...MBOX,minWidth:520,maxWidth:680,width:"min(680px,92vw)"}}>
-          <h3 style={{margin:"0 0 16px",color:"#00d4ff",letterSpacing:1}}>🔗 launch map 갱신 + 빌드</h3>
+          <h3 style={{margin:"0 0 16px",color:"#00d4ff",letterSpacing:1}}>🏗 빌드</h3>
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             <label style={{display:"flex",flexDirection:"column",gap:4}}>
-              <span style={{fontSize:10,color:"rgba(0,212,255,0.5)"}}>launch 파일</span>
+              <span style={{fontSize:10,color:"rgba(0,212,255,0.5)"}}>맵 YAML 경로</span>
               <div style={{display:"flex",gap:6}}>
-                <input value={workspaceSync.launchPath} onChange={e=>setWorkspaceSync(prev=>({...prev,launchPath:e.target.value}))}
-                  placeholder="/home/nvidia/rby1_nav2/launch/example.launch.py"
+                <input value={workspaceSync.mapPath} onChange={e=>setWorkspaceSync(prev=>({...prev,mapPath:e.target.value}))}
+                  placeholder={DEFAULT_MAP_SEARCH_DIR}
                   style={{...INPUT,flex:1,minWidth:0}}/>
-                <button style={btn()} onClick={chooseLaunchFile} disabled={workspaceBusy}>찾기</button>
+                <button style={btn()} onClick={chooseMapYamlPath} disabled={workspaceBusy}>찾기</button>
               </div>
             </label>
             <label style={{display:"flex",flexDirection:"column",gap:4}}>
-              <span style={{fontSize:10,color:"rgba(0,212,255,0.5)"}}>맵 YAML 경로</span>
-              <input value={workspaceSync.mapPath} onChange={e=>setWorkspaceSync(prev=>({...prev,mapPath:e.target.value}))}
-                placeholder={"저장 후 자동 입력됩니다"}
+              <span style={{fontSize:10,color:"rgba(0,212,255,0.5)"}}>package 이름</span>
+              <input value={workspaceSync.packageName} onChange={e=>setWorkspaceSync(prev=>({...prev,packageName:e.target.value}))}
+                placeholder="rby1_nav2"
                 style={{...INPUT,width:"100%",boxSizing:"border-box"}}/>
             </label>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-              <label style={{display:"flex",flexDirection:"column",gap:4}}>
-                <span style={{fontSize:10,color:"rgba(0,212,255,0.5)"}}>launch arg 이름</span>
-                <input value={workspaceSync.argName} onChange={e=>setWorkspaceSync(prev=>({...prev,argName:e.target.value}))}
-                  placeholder="map"
-                  style={{...INPUT,width:"100%",boxSizing:"border-box"}}/>
-              </label>
-              <label style={{display:"flex",flexDirection:"column",gap:4}}>
-                <span style={{fontSize:10,color:"rgba(0,212,255,0.5)"}}>package 이름</span>
-                <input value={workspaceSync.packageName} onChange={e=>setWorkspaceSync(prev=>({...prev,packageName:e.target.value}))}
-                  placeholder="rby1_nav2"
-                  style={{...INPUT,width:"100%",boxSizing:"border-box"}}/>
-              </label>
-            </div>
             <label style={{display:"flex",flexDirection:"column",gap:4}}>
               <span style={{fontSize:10,color:"rgba(0,212,255,0.5)"}}>ROS2 워크스페이스 루트</span>
               <div style={{display:"flex",gap:6}}>
                 <input value={workspaceSync.workspaceRoot} onChange={e=>setWorkspaceSync(prev=>({...prev,workspaceRoot:e.target.value}))}
-                  placeholder="/home/nvidia/rby1_nav2"
+                  placeholder={DEFAULT_WORKSPACE_ROOT}
                   style={{...INPUT,flex:1,minWidth:0}}/>
                 <button style={btn()} onClick={chooseWorkspaceRoot} disabled={workspaceBusy}>찾기</button>
               </div>
             </label>
             <div style={{fontSize:10,color:"rgba(0,212,255,0.3)",lineHeight:1.7,padding:"8px 10px",background:"rgba(0,212,255,0.04)",borderRadius:5}}>
-              저장한 YAML 경로를 launch 파일의 <b>LaunchConfiguration default</b> 또는 <b>default_value</b>로 다시 쓰고, 지정한 워크스페이스에서 <b>colcon build</b>를 실행합니다.
+              launch 파일은 수정하지 않고, 지정한 워크스페이스에서 <b>colcon build</b>만 실행합니다. 맵 찾기 기본 폴더는 <b>{DEFAULT_MAP_SEARCH_DIR}</b>입니다.
             </div>
           </div>
           <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:18}}>
             <button style={btn()} onClick={()=>setShowWorkspaceDlg(false)} disabled={workspaceBusy}>닫기</button>
-            <button style={{...btn(true),borderColor:"#00d4ff",color:"#00d4ff",opacity:canSyncWorkspace?1:.45}} onClick={syncLaunchAndBuild} disabled={!canSyncWorkspace}>
-              {workspaceBusy?"처리 중...":"launch 갱신 + 빌드"}
+            <button style={{...btn(true),borderColor:"#00d4ff",color:"#00d4ff",opacity:canSyncWorkspace?1:.45}} onClick={buildWorkspaceOnly} disabled={!canSyncWorkspace}>
+              {workspaceBusy?"빌드 중...":"빌드"}
             </button>
           </div>
         </div></div>
