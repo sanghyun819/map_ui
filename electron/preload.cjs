@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("fs:readFile", filePath, encoding),
   writeFile: (filePath, data, encoding) =>
     ipcRenderer.invoke("fs:writeFile", filePath, data, encoding),
+  copySemanticToThor: (options) =>
+    ipcRenderer.invoke("thor:copySemantic", options),
   readDir: (dirPath) => ipcRenderer.invoke("fs:readDir", dirPath),
   updateLaunchMap: (options) => ipcRenderer.invoke("workspace:updateLaunchMap", options),
   buildWorkspace: (options) => ipcRenderer.invoke("workspace:build", options),

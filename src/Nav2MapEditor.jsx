@@ -76,6 +76,7 @@ function createRobotBackendAPI(baseUrl) {
         data: binary ? bytesToBase64(data) : String(data ?? ""),
       });
     },
+    copySemanticToThor: (options) => post("/api/thor/copy-semantic", options),
     readDir: (dirPath) => post("/api/fs/readdir", { path: dirPath }),
     browseDir: (dirPath) => post("/api/fs/readdir", { path: dirPath, withFileTypes: true }),
     fsRoots: () => get("/api/fs/roots"),
@@ -159,6 +160,8 @@ async function nativeOpen(filters, pickPath) {
 const PX_OCCUPIED = 0, PX_FREE = 254, PX_UNKNOWN = 205;
 const SNAP_RADIUS = 10;
 const START_POSE_ID = "nav2_start";
+const QUICK_MAP_DIR = "/home/nvidia/rby1_nav2/install/rby1_nav2/share/rby1_nav2/maps";
+const QUICK_MAP_NAMES = {1:"map_first",2:"map_second"};
 
 // ─── Semantic type definitions ─────────────────────────────────────────────────
 const MAP_TYPES = [
@@ -612,6 +615,12 @@ const SEM_EXTRA_TOOLS=[
   {id:"semGoal",   icon:"🎯", label:"시맨틱골",  key:"9", color:"#ff6680"},
   {id:"semSelect", icon:"↖", label:"선택/이동", key:"0", color:"#00d4ff"},
 ];
+const SEM_CAPTURE_KINDS={startPose:"start",waypoint:"waypoint",semGoal:"goal"};
+const SEM_CAPTURE_TITLES={
+  startPose:"현재 로봇 pose를 Nav2 시작점으로 지정",
+  waypoint:"현재 로봇 pose를 웨이포인트로 추가",
+  semGoal:"현재 로봇 pose를 시맨틱 골로 추가",
+};
 const DRAW_COLORS=[
   {val:PX_OCCUPIED,css:"#0a0a0a",border:"#555",label:"장애물"},
   {val:PX_FREE,css:"#f8f8f8",border:"#aaa",label:"자유공간"},
@@ -1167,7 +1176,7 @@ function CommitInput({value,onCommit,style,...props}) {
 }
 
 // ─── Semantic panel (4-level hierarchy: map > room > carrier > object) ───────
-function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameGoalId,setWaypoints,onImportJSON,onExportJSON,toWorld,resolution,typeOptions}) {
+function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameGoalId,setWaypoints,onImportJSON,onImportFile,onExportJSON,toWorld,resolution,typeOptions}) {
   const res=resolution||0.05;
   const [expanded,setExpanded]=useState({});
   const toggle=(id)=>setExpanded(p=>({...p,[id]:!p[id]}));
@@ -1552,6 +1561,12 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,se
       )}
       <div style={{padding:10,borderTop:"1px solid rgba(0,212,255,0.1)",display:"flex",flexDirection:"column",gap:5}}>
         {onImportJSON&&<button style={{...btn(),width:"100%",justifyContent:"center",fontSize:11}} onClick={onImportJSON}>📥 semantic_map.json 불러오기</button>}
+        {!onImportJSON&&onImportFile&&(
+          <label style={{...btn(),width:"100%",justifyContent:"center",fontSize:11,cursor:"pointer"}}>
+            📥 semantic_map.json 불러오기
+            <input type="file" accept=".json" onChange={onImportFile} style={{display:"none"}}/>
+          </label>
+        )}
         <button style={{...btn(true),width:"100%",justifyContent:"center",fontSize:11}} onClick={onExportJSON}>⬇ semantic_map.json 저장</button>
       </div>
     </div>
@@ -1847,6 +1862,7 @@ export default function Nav2MapEditor() {
   const [nav2Busy, setNav2Busy] = useState(false);
   const [nav2ParamsFile, setNav2ParamsFile] = useState("");
   const [slamSaveBusy, setSlamSaveBusy] = useState(false);
+  const [quickSaveBusy, setQuickSaveBusy] = useState(null);
   const [slamMapTopic, setSlamMapTopic] = useState("/map");
   const [slamMapStats, setSlamMapStats] = useState(null);
   const [slamUseSimTime, setSlamUseSimTime] = useState(false);
@@ -3724,6 +3740,38 @@ export default function Nav2MapEditor() {
     if(saved)setStatus(`💾 저장 완료: ${saved.baseName}.pgm · .yaml · _semantic.json`);
   };
 
+  const quickSaveNavMap=useCallback(async(slot)=>{
+    const c=canvasRef.current;
+    if(!c||!mapLoaded){setStatus("⚠ 저장할 맵이 없습니다");return;}
+    if(!hasHostAPI){setStatus("⚠ 퀵 저장은 Electron 또는 robot backend에서만 가능합니다");return;}
+    const baseName=QUICK_MAP_NAMES[slot]||`map_${slot}`;
+    const yamlPath=`${QUICK_MAP_DIR}/${baseName}.yaml`;
+    const pgmPath=`${QUICK_MAP_DIR}/${baseName}.pgm`;
+    const semanticPath=`${QUICK_MAP_DIR}/${baseName}_semantic.json`;
+    setQuickSaveBusy(slot);
+    try{
+      await hostAPI.writeFile(pgmPath,canvasToPGM(c),null);
+      await hostAPI.writeFile(yamlPath,writeYAML(meta,baseName),"utf-8");
+      await hostAPI.writeFile(semanticPath,buildSemanticJSON(),"utf-8");
+      syncWorkspaceMapPath(yamlPath);
+
+      let thorStatus=" · Thor 복사 생략";
+      if(hostAPI.copySemanticToThor){
+        try{
+          await hostAPI.copySemanticToThor({sourcePath:semanticPath,fileName:`${baseName}_semantic.json`});
+          thorStatus=" · Thor semantic JSON 복사 완료";
+        }catch(e){
+          thorStatus=` · Thor 복사 실패: ${e.message}`;
+        }
+      }
+      setStatus(`💾 ${slot}번맵 저장 완료: ${baseName}.yaml${thorStatus}`);
+    }catch(e){
+      setStatus(`⚠ ${slot}번맵 저장 실패: ${e.message}`);
+    }finally{
+      setQuickSaveBusy(null);
+    }
+  },[mapLoaded,meta,buildSemanticJSON,syncWorkspaceMapPath]);
+
   const saveSlamResult=useCallback(async()=>{
     if(!slamMapStats?.width){setStatus("⚠ 저장할 SLAM live map이 없습니다");return;}
     setSlamSaveBusy(true);
@@ -3857,6 +3905,18 @@ export default function Nav2MapEditor() {
           <button style={btn()} onClick={()=>setShowNewDlg(true)}>✦ 새 맵</button>
           <div style={{width:1,height:16,background:"rgba(0,212,255,0.15)"}}/>
           <button style={{...btn(),opacity:mapLoaded?1:.4}} onClick={saveAll} disabled={!mapLoaded}>💾 전체저장</button>
+          <button
+            style={{...btn(),opacity:mapLoaded&&hasHostAPI&&!quickSaveBusy?1:.4}}
+            onClick={()=>quickSaveNavMap(1)}
+            disabled={!mapLoaded||!hasHostAPI||!!quickSaveBusy}
+            title={`${QUICK_MAP_DIR}/map_first.yaml 덮어쓰기 + map_first_semantic.json Thor 복사`}
+          >{quickSaveBusy===1?"1번 저장 중":"1번맵 저장"}</button>
+          <button
+            style={{...btn(),opacity:mapLoaded&&hasHostAPI&&!quickSaveBusy?1:.4}}
+            onClick={()=>quickSaveNavMap(2)}
+            disabled={!mapLoaded||!hasHostAPI||!!quickSaveBusy}
+            title={`${QUICK_MAP_DIR}/map_second.yaml 덮어쓰기 + map_second_semantic.json Thor 복사`}
+          >{quickSaveBusy===2?"2번 저장 중":"2번맵 저장"}</button>
           <button style={{...btn(),opacity:mapLoaded?1:.4}} onClick={savePGM} disabled={!mapLoaded}>⬇ PGM</button>
           <button style={{...btn(showWorkspaceDlg),opacity:workspaceAvailable?1:.4}} onClick={()=>setShowWorkspaceDlg(v=>!v)} disabled={!workspaceAvailable}>🔗 launch·build</button>
           <div style={{width:1,height:16,background:"rgba(0,212,255,0.15)"}}/>
@@ -3868,11 +3928,6 @@ export default function Nav2MapEditor() {
           <div style={{flex:"1 1 180px"}}/>
           <div style={{display:"flex",alignItems:"center",gap:5,marginLeft:"auto",flexWrap:"wrap",justifyContent:"flex-end"}}>
             <button style={btn(showSemPanel)} onClick={()=>setShowSemPanel(v=>!v)}>🗺 시맨틱{(maps.length+rooms.length+carriers.length+objects.length+goals.length+waypoints.length+(startPose?1:0))>0&&` (${maps.length+rooms.length+carriers.length+objects.length+goals.length+waypoints.length+(startPose?1:0)})`}</button>
-            {hasHostAPI ? (
-              <button style={btn()} onClick={handleSemanticOpen}>📥 시맨틱</button>
-            ) : (
-              <label style={{...btn(),cursor:"pointer"}}>📥 시맨틱<input type="file" accept=".json" onChange={handleSemanticFile} style={{display:"none"}}/></label>
-            )}
             <button style={btn(showCatalogPanel)} onClick={()=>setShowCatalogPanel(v=>!v)}>📋 MD목록 ({catalogCounts(semanticCatalog).rooms}/{catalogCounts(semanticCatalog).locations}/{catalogCounts(semanticCatalog).objects})</button>
             <button style={btn(showRos2Panel)} onClick={()=>setShowRos2Panel(v=>!v)}>🤖 ROS2{ros2State===ROS2_STATES.CONNECTED&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
             <button style={btn(showSlamPanel||slamMode)} onClick={()=>setShowSlamPanel(v=>!v)}>🧭 SLAM{slamMode&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
@@ -3897,10 +3952,12 @@ export default function Nav2MapEditor() {
               <button style={{...btn(),opacity:rosbridgeBusy ? .45 : 1}} onClick={startRosbridge} disabled={rosbridgeBusy}>🌉 Bridge</button>
             )
           )}
-          <button style={{...btn(),opacity:mapLoaded&&ros2State===ROS2_STATES.CONNECTED?1:.45}} onClick={()=>captureRobotPose("start")} disabled={!mapLoaded||ros2State!==ROS2_STATES.CONNECTED}>⌂ 현재→시작</button>
-          <button style={{...btn(),opacity:mapLoaded&&ros2State===ROS2_STATES.CONNECTED?1:.45}} onClick={()=>captureRobotPose("waypoint")} disabled={!mapLoaded||ros2State!==ROS2_STATES.CONNECTED}>◎ 현재→WP</button>
-          <button style={{...btn(),opacity:mapLoaded&&ros2State===ROS2_STATES.CONNECTED?1:.45}} onClick={()=>captureRobotPose("goal")} disabled={!mapLoaded||ros2State!==ROS2_STATES.CONNECTED}>🎯 현재→골</button>
-          <button style={{...btn(),opacity:startPose&&ros2State===ROS2_STATES.CONNECTED?1:.4}} onClick={publishInitialPose} disabled={!startPose||ros2State!==ROS2_STATES.CONNECTED}>📡 시작점 전송</button>
+          <button
+            style={{...btn(),opacity:startPose&&ros2State===ROS2_STATES.CONNECTED?1:.4}}
+            onClick={publishInitialPose}
+            disabled={!startPose||ros2State!==ROS2_STATES.CONNECTED}
+            title="지정한 시작점을 /initialpose로 publish해서 Nav2/AMCL 위치 추정 초기값을 설정합니다. 로봇 이동 명령은 아닙니다."
+          >📡 시작점→Nav2</button>
           {hasHostAPI&&(
             <>
               <div style={{width:1,height:16,background:"rgba(0,212,255,0.12)",margin:"0 2px"}}/>
@@ -4007,18 +4064,41 @@ export default function Nav2MapEditor() {
               </div>
             ))}
             <div style={{width:"80%",height:1,background:"rgba(0,212,255,0.1)",margin:"5px 0"}}/>
-            {SEM_EXTRA_TOOLS.map(t=>(
-              <button key={t.id} title={`${t.label} [${t.key}]`} onClick={()=>{setTool(t.id);if(polyVertsRef.current.length>0&&t.id!==tool){setPolyVerts([]);setPolySnap(false);}}} style={{
-                width:76,height:42,border:"none",borderRadius:5,cursor:"pointer",
-                background:tool===t.id?"rgba(0,212,255,0.2)":"rgba(255,255,255,0.03)",
-                boxShadow:tool===t.id?`inset 0 0 0 1.5px ${t.color}88`:"none",
-                color:tool===t.id?t.color:"#5a8a9a",
-                display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2,transition:"all 0.15s",
-              }}>
-                <span style={{fontSize:16,lineHeight:1}}>{t.icon}</span>
-                <span style={{fontSize:10}}>{t.label}</span>
-              </button>
-            ))}
+            {SEM_EXTRA_TOOLS.map(t=>{
+              const captureKind=SEM_CAPTURE_KINDS[t.id];
+              const canCapture=mapLoaded&&ros2State===ROS2_STATES.CONNECTED;
+              return(
+                <div key={t.id} style={{width:"100%",boxSizing:"border-box",display:"flex",gap:3,padding:"0 3px",marginBottom:3}}>
+                  <button title={`${t.label} [${t.key}]`} onClick={()=>{setTool(t.id);if(polyVertsRef.current.length>0&&t.id!==tool){setPolyVerts([]);setPolySnap(false);}}} style={{
+                    flex:1,minWidth:0,height:42,border:"none",borderRadius:5,cursor:"pointer",
+                    background:tool===t.id?"rgba(0,212,255,0.2)":"rgba(255,255,255,0.03)",
+                    boxShadow:tool===t.id?`inset 0 0 0 1.5px ${t.color}88`:"none",
+                    color:tool===t.id?t.color:"#5a8a9a",
+                    display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2,transition:"all 0.15s",
+                  }}>
+                    <span style={{fontSize:16,lineHeight:1}}>{t.icon}</span>
+                    <span style={{fontSize:10,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:"100%"}}>{t.label}</span>
+                  </button>
+                  {captureKind&&(
+                    <button
+                      title={SEM_CAPTURE_TITLES[t.id]}
+                      onClick={()=>captureRobotPose(captureKind)}
+                      disabled={!canCapture}
+                      style={{
+                        width:30,height:42,border:"none",borderRadius:5,cursor:canCapture?"pointer":"not-allowed",
+                        background:canCapture?`${t.color}18`:"rgba(255,255,255,0.03)",
+                        boxShadow:canCapture?`inset 0 0 0 1px ${t.color}66`:"none",
+                        color:canCapture?t.color:"rgba(90,138,154,0.45)",
+                        display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:1,
+                        opacity:canCapture?1:.45,
+                      }}>
+                      <span style={{fontSize:14,lineHeight:1}}>⌖</span>
+                      <span style={{fontSize:9,lineHeight:1}}>현</span>
+                    </button>
+                  )}
+                </div>
+              );
+            })}
             <div style={{width:"80%",height:1,background:"rgba(0,212,255,0.1)",margin:"5px 0"}}/>
             <span style={{fontSize:10,color:"rgba(0,212,255,0.45)",fontWeight:"bold",marginBottom:3}}>투명도</span>
             <input type="range" min={.1} max={1} step={.05} value={semOpacity} onChange={e=>setSemOpacity(Number(e.target.value))} style={{width:56,height:60,writingMode:"vertical-lr",direction:"rtl",cursor:"pointer",accentColor:"#00d4ff"}}/>
@@ -4241,6 +4321,7 @@ export default function Nav2MapEditor() {
             }}
             setWaypoints={setWaypoints}
             onImportJSON={hasHostAPI?handleSemanticOpen:null}
+            onImportFile={!hasHostAPI?handleSemanticFile:null}
             onExportJSON={async()=>await nativeSave(`${meta.filename}_semantic.json`,[{name:"JSON",extensions:["json"]}],buildSemanticJSON(),"utf-8",pickHostPath)}
             toWorld={toWorld} resolution={meta.resolution}
             typeOptions={typeOptions}

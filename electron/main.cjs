@@ -45,6 +45,13 @@ function shellQuote(value) {
   return `'${String(value ?? "").replace(/'/g, `'"'"'`)}'`;
 }
 
+const THOR_DEFAULTS = {
+  host: process.env.THOR_IP || "192.168.78.11",
+  user: process.env.THOR_USER || "thor",
+  password: process.env.THOR_PASSWORD || "thor",
+  destDir: process.env.THOR_SEMANTIC_DIR || "/home/thor/bt_ws/map_json",
+};
+
 function runShellCommand(command, options = {}) {
   return new Promise((resolve, reject) => {
     let stdout = "";
@@ -72,6 +79,29 @@ function runShellCommand(command, options = {}) {
       reject(error);
     });
   });
+}
+
+async function copySemanticToThor(options = {}) {
+  const sourcePath = String(options.sourcePath || "").trim();
+  if (!sourcePath) throw new Error("sourcePath is required");
+  if (!fs.existsSync(sourcePath)) throw new Error(`semantic JSON not found: ${sourcePath}`);
+
+  const host = String(options.host || THOR_DEFAULTS.host).trim();
+  const user = String(options.user || THOR_DEFAULTS.user).trim();
+  const password = String(options.password || THOR_DEFAULTS.password);
+  const destDir = String(options.destDir || THOR_DEFAULTS.destDir).replace(/\/+$/, "");
+  const fileName = path.basename(String(options.fileName || sourcePath));
+  if (!host || !user || !destDir || !fileName) throw new Error("Thor copy target is incomplete");
+
+  const remote = `${user}@${host}`;
+  const destPath = `${destDir}/${fileName}`;
+  const command = [
+    'command -v sshpass >/dev/null 2>&1 || { echo "sshpass is required for password SSH copy" >&2; exit 127; }',
+    `sshpass -p "$THOR_PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${shellQuote(remote)} ${shellQuote(`mkdir -p ${shellQuote(destDir)}`)}`,
+    `sshpass -p "$THOR_PASSWORD" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ${shellQuote(sourcePath)} ${shellQuote(`${remote}:${destPath}`)}`,
+  ].join("; ");
+  const result = await runShellCommand(command, { env: { THOR_PASSWORD: password } });
+  return { sourcePath, destPath, host, user, ...result };
 }
 
 function escapeRegExp(value) {
@@ -486,6 +516,10 @@ ipcMain.handle("fs:readFile", async (event, filePath, encoding) => {
 ipcMain.handle("fs:writeFile", async (event, filePath, data, encoding) => {
   fs.writeFileSync(filePath, data, encoding || "utf-8");
   return true;
+});
+
+ipcMain.handle("thor:copySemantic", async (event, options = {}) => {
+  return copySemanticToThor(options);
 });
 
 ipcMain.handle("workspace:updateLaunchMap", async (event, options = {}) => {
