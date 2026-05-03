@@ -178,6 +178,9 @@ function nextStartPoseId(startPoses){
   while(used.has(`s${i}`))i++;
   return `s${i}`;
 }
+function nextStartTask(startPoses,selected=DEFAULT_START_TASK){
+  return START_TASKS.find(task=>!startPoses?.[task]) || (START_TASKS.includes(selected)?selected:DEFAULT_START_TASK);
+}
 
 // ─── Semantic type definitions ─────────────────────────────────────────────────
 const MAP_TYPES = [
@@ -873,6 +876,60 @@ function GoalDialog({rooms,carriers,objects,roomId,goalId,typeOptions,onConfirm,
   );
 }
 
+// ─── Start pose dialog ───────────────────────────────────────────────────────
+function StartPoseDialog({startTasks,startPoses,pose,defaultTask,defaultId,onConfirm,onCancel}){
+  const initialTask=startTasks.includes(defaultTask)?defaultTask:(startTasks[0]||DEFAULT_START_TASK);
+  const [task,setTask]=useState(initialTask);
+  const [id,setId]=useState(defaultId||nextStartPoseId(startPoses));
+  const pickTask=(nextTask)=>{
+    setTask(nextTask);
+    setId(startPoses?.[nextTask]?.id||nextStartPoseId(startPoses));
+  };
+  const confirm=()=>onConfirm(task,id);
+  const existing=startPoses?.[task];
+  return(
+    <div style={MODAL}>
+      <div style={{...MBOX,minWidth:380}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18}}>
+          <span style={{fontSize:22}}>⌂</span>
+          <h3 style={{margin:0,color:"#00e676",letterSpacing:1,fontSize:14}}>시작점 추가</h3>
+        </div>
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:10,color:"rgba(0,230,118,0.55)",marginBottom:6,letterSpacing:1}}>TASK 선택</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:4}}>
+            {startTasks.map(t=>(
+              <button key={t} onClick={()=>pickTask(t)} style={{
+                ...btn(task===t),justifyContent:"center",padding:"7px 8px",
+                borderColor:task===t?"rgba(0,230,118,0.65)":undefined,
+                color:task===t?"#00e676":undefined,
+                boxShadow:task===t?"0 0 8px rgba(0,230,118,0.25)":"none",
+              }}>
+                <span style={{fontSize:11}}>{t}</span>
+                {startPoses?.[t]&&<span style={{fontSize:9,opacity:.5}}>교체</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:10,color:"rgba(0,230,118,0.55)",marginBottom:6,letterSpacing:1}}>ID</div>
+          <input autoFocus value={id} onChange={e=>setId(e.target.value)}
+            onKeyDown={e=>{if(e.key==="Enter")confirm();else if(e.key==="Escape")onCancel();}}
+            style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:13}}/>
+        </div>
+        <div style={{padding:"7px 10px",background:"rgba(0,0,0,0.3)",borderRadius:5,marginBottom:16,color:"rgba(0,230,118,0.48)",fontSize:10,lineHeight:1.7}}>
+          <div>label: {task}</div>
+          {pose&&<div>pixel: ({pose.x}, {pose.y}) · {Math.round((pose.theta||0)*180/Math.PI)}°</div>}
+          {existing&&<div style={{color:"rgba(255,190,80,0.75)"}}>선택한 task의 기존 시작점이 새 위치로 교체됩니다</div>}
+        </div>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+          <button style={btn()} onClick={onCancel}>취소</button>
+          <button style={{...btn(true),borderColor:"#00e676",color:"#00e676"}} onClick={confirm}>⌂ 추가</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function formatFileSize(bytes){
   if(!Number.isFinite(bytes)||bytes<=0)return "";
   if(bytes<1024)return `${bytes} B`;
@@ -1192,12 +1249,12 @@ function CommitInput({value,onCommit,style,...props}) {
 }
 
 // ─── Semantic panel (4-level hierarchy: map > room > carrier > object) ───────
-function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,startPoses,startTasks,selectedStartTask,setSelectedStartTask,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameGoalId,onRenameStartPoseId,setWaypoints,onImportJSON,onImportFile,onExportJSON,toWorld,resolution,typeOptions}) {
+function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPoses,startTasks,setSelectedStartTask,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameGoalId,onRenameStartPoseId,setWaypoints,onImportJSON,onImportFile,onExportJSON,toWorld,resolution,typeOptions}) {
   const res=resolution||0.05;
   const [expanded,setExpanded]=useState({});
   const toggle=(id)=>setExpanded(p=>({...p,[id]:!p[id]}));
   const startPoseCount=Object.values(startPoses||{}).filter(Boolean).length;
-  const currentStartId=startPose?.id||"";
+  const startPoseEntries=startTasks.map(task=>({task,pose:startPoses?.[task]})).filter(x=>x.pose);
 
   const insidePoly=(poly,obj)=>{
     if(!poly)return false;
@@ -1458,45 +1515,37 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,st
         )}
       </div>
       {/* ── Start pose section ── */}
-      {(startPose||startPoseCount>0)&&(
+      {startPoseCount>0&&(
         <div style={{borderTop:"1px solid rgba(0,230,118,0.16)",marginTop:4}}>
           <div style={{padding:"6px 10px 4px",fontSize:10,color:"#00e676",letterSpacing:1,fontWeight:"bold"}}>⌂ NAV2 START</div>
-          <div style={{display:"flex",gap:4,alignItems:"center",margin:"0 8px 5px"}} onClick={e=>e.stopPropagation()}>
-            <span style={{fontSize:9,color:"rgba(0,230,118,0.55)",whiteSpace:"nowrap"}}>task</span>
-            <select value={selectedStartTask} onChange={e=>{setSelectedStartTask(e.target.value);setSelId(startPoses?.[e.target.value]?.id||null);}}
-              style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}>
-              {startTasks.map(task=><option key={task} value={task}>{task}</option>)}
-            </select>
-          </div>
-          {startPose?(
-          <div onClick={()=>setSelId(selId===currentStartId?null:currentStartId)} style={{
-            margin:"0 8px 4px",padding:"5px 8px",borderRadius:5,cursor:"pointer",
-            background:selId===currentStartId?"rgba(0,230,118,0.1)":"rgba(255,255,255,0.02)",
-            border:selId===currentStartId?"1px solid rgba(0,230,118,0.45)":"1px solid rgba(0,230,118,0.12)",
-          }}>
-            <div style={{display:"flex",alignItems:"center",gap:5}}>
-              <span style={{fontSize:12,color:"#00e676"}}>⌂</span>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{color:"#00e676",fontWeight:"bold",fontSize:11}}>{startPose.id}: {selectedStartTask}</div>
-                <div style={{color:"rgba(0,230,118,0.48)",fontSize:9}}>
-                  {(()=>{const w=toWorld(startPose.x,startPose.y);return `(${w.x}, ${w.y})m`;})()} · {Math.round(startPose.theta*180/Math.PI)}°
+          {startPoseEntries.map(({task,pose})=>{
+            const isSel=selId===pose.id;
+            return(
+              <div key={task} onClick={()=>{setSelectedStartTask(task);setSelId(isSel?null:pose.id);}} style={{
+                margin:"0 8px 4px",padding:"5px 8px",borderRadius:5,cursor:"pointer",
+                background:isSel?"rgba(0,230,118,0.1)":"rgba(255,255,255,0.02)",
+                border:isSel?"1px solid rgba(0,230,118,0.45)":"1px solid rgba(0,230,118,0.12)",
+              }}>
+                <div style={{display:"flex",alignItems:"center",gap:5}}>
+                  <span style={{fontSize:12,color:"#00e676"}}>⌂</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{color:"#00e676",fontWeight:"bold",fontSize:11}}>{pose.id}: {task}</div>
+                    <div style={{color:"rgba(0,230,118,0.48)",fontSize:9}}>
+                      {(()=>{const w=toWorld(pose.x,pose.y);return `(${w.x}, ${w.y})m`;})()} · {Math.round(pose.theta*180/Math.PI)}°
+                    </div>
+                  </div>
+                  <button onClick={ev=>{ev.stopPropagation();onDeleteStart(task);}} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
                 </div>
+                {isSel&&(
+                  <div style={{marginTop:5,display:"flex",alignItems:"center",gap:4}} onClick={e=>e.stopPropagation()}>
+                    <span style={{fontSize:9,color:"rgba(0,230,118,0.5)",whiteSpace:"nowrap"}}>ID</span>
+                    <CommitInput value={pose.id||""} onCommit={next=>onRenameStartPoseId?.(task,next)}
+                      style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}/>
+                  </div>
+                )}
               </div>
-              <button onClick={ev=>{ev.stopPropagation();onDeleteStart(selectedStartTask);}} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
-            </div>
-            {selId===currentStartId&&(
-              <div style={{marginTop:5,display:"flex",alignItems:"center",gap:4}} onClick={e=>e.stopPropagation()}>
-                <span style={{fontSize:9,color:"rgba(0,230,118,0.5)",whiteSpace:"nowrap"}}>ID</span>
-                <CommitInput value={startPose.id||""} onCommit={next=>onRenameStartPoseId?.(selectedStartTask,next)}
-                  style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}/>
-              </div>
-            )}
-          </div>
-          ):(
-            <div style={{margin:"0 8px 4px",padding:"6px 8px",borderRadius:5,background:"rgba(255,255,255,0.02)",border:"1px solid rgba(0,230,118,0.12)",color:"rgba(0,230,118,0.42)",fontSize:10}}>
-              선택한 task 시작점 없음
-            </div>
-          )}
+            );
+          })}
         </div>
       )}
       {/* ── Goals section ── */}
@@ -1873,6 +1922,8 @@ export default function Nav2MapEditor() {
   const [selSemId,    setSelSemId]    = useState(null);
   const [semDlg,      setSemDlg]      = useState(null);
   const [goalDlg,     setGoalDlg]     = useState(null); // {x, y, roomId}
+  const [startDlg,    setStartDlg]    = useState(null); // {pose, defaultTask, defaultId}
+  const [startDraft,  setStartDraft]  = useState(null);
   const [showSemPanel,setShowSemPanel]= useState(false);
   const [showCatalogPanel,setShowCatalogPanel]= useState(false);
   const [semOpacity,  setSemOpacity]  = useState(0.8);
@@ -1952,10 +2003,6 @@ export default function Nav2MapEditor() {
     });
   },[]);
 
-  const setActiveStartPose=useCallback((updater)=>{
-    setStartPoseForTask(selectedStartTask,updater);
-  },[selectedStartTask,setStartPoseForTask]);
-
   const pickHostPath=useCallback((options={})=>{
     if(hostAPI?.isRobotBackend&&hostAPI?.browseDir){
       return new Promise(resolve=>{
@@ -2029,6 +2076,7 @@ export default function Nav2MapEditor() {
   const dragRef     = useRef(null); // {id, layer:'room'|'carrier'|'object', startPt:{x,y}}
   const hoverSemRef = useRef(null); // id of hovered semantic shape (or 'wp:idx' for waypoints)
   const startDragRef= useRef(null); // Nav2 start pose being direction-dragged on creation
+  const startDraftRef= useRef(null); // temporary start pose before task/id dialog confirmation
   const wpDragRef   = useRef(null); // {idx} — waypoint being direction-dragged on creation
   const goalDragRef = useRef(null); // {id, roomId, theta} — goal being direction-dragged on creation
 
@@ -2370,17 +2418,20 @@ export default function Nav2MapEditor() {
     });
 
     // ── Draw task-specific Nav2 start poses ──
-    START_TASKS.forEach(task=>{
-      const pose=startPoses[task];if(!pose)return;
+    const startDrawItems=START_TASKS
+      .map(task=>({task,pose:startPoses[task],draft:false}))
+      .filter(x=>x.pose);
+    if(startDraft)startDrawItems.push({task:startDraft.task,pose:startDraft,draft:true});
+    startDrawItems.forEach(({task,pose,draft})=>{
       const id=pose.id;
       const isSel=selSemId===id;
       const isHov=hov===id;
       const isActive=selectedStartTask===task;
-      const isDragging=!!startDragRef.current&&startDragRef.current.task===task;
+      const isDragging=draft||!!startDragRef.current&&startDragRef.current.task===task;
       const sColor=isDragging?"#00ff88":isSel||isActive?"#00e676":"#36d399";
       const len=isActive?16:12,ax=pose.x+.5+Math.cos(pose.theta)*len,ay=pose.y+.5-Math.sin(pose.theta)*len;
       ctx.save();
-      ctx.globalAlpha=isActive?1:.55;
+      ctx.globalAlpha=draft ? .75 : (isActive?1:.55);
       ctx.shadowColor=sColor;ctx.shadowBlur=isDragging?8:isSel?7:3;
       ctx.beginPath();ctx.moveTo(pose.x+.5,pose.y+.5);ctx.lineTo(ax,ay);
       ctx.strokeStyle=sColor;ctx.lineWidth=isSel||isActive?2:1.2;ctx.setLineDash([]);ctx.stroke();
@@ -2547,7 +2598,7 @@ export default function Nav2MapEditor() {
         ctx.restore();
       }
     }
-  },[maps,rooms,carriers,objects,startPoses,selectedStartTask,waypoints,goals,selWpIdx,selSemId,semOpacity,polySnap,tool,drawRos2,typeOptions]);
+  },[maps,rooms,carriers,objects,startPoses,startDraft,selectedStartTask,waypoints,goals,selWpIdx,selSemId,semOpacity,polySnap,tool,drawRos2,typeOptions]);
 
   useEffect(()=>{drawOverlayRef.current=drawOverlay;},[drawOverlay]);
   useEffect(()=>{drawOverlay();},[drawOverlay]);
@@ -2670,13 +2721,15 @@ export default function Nav2MapEditor() {
     // ── Nav2 start pose ──
     if(tool==="startPose"){
       if(inBounds(pt)){
-        const newId=startPoses[selectedStartTask]?.id||nextStartPoseId(startPoses);
-        const newStart={id:newId,task:selectedStartTask,x:pt.x,y:pt.y,theta:0,label:selectedStartTask};
-        startDragRef.current={id:newId,task:selectedStartTask};
+        const defaultTask=nextStartTask(startPoses,selectedStartTask);
+        const newId=startPoses[defaultTask]?.id||nextStartPoseId(startPoses);
+        const newStart={id:newId,task:defaultTask,x:pt.x,y:pt.y,theta:0,label:defaultTask};
+        startDragRef.current={id:newId,task:defaultTask};
+        startDraftRef.current=newStart;
         isDrawing.current=true; shapeStart.current=pt;
-        setStartPoseForTask(selectedStartTask,newStart);
-        setSelSemId(newId);setSelWpIdx(null);
-        setStatus(`⌂ ${selectedStartTask} 시작점 방향 지정`);
+        setStartDraft(newStart);
+        setSelSemId(null);setSelWpIdx(null);
+        setStatus("⌂ 드래그하여 시작 방향 지정");
       }
       return;
     }
@@ -2703,7 +2756,7 @@ export default function Nav2MapEditor() {
     isDrawing.current=true;shapeStart.current=pt;lastPt.current=pt;
     if(["line","rect","circle"].includes(tool)){const c=canvasRef.current;snapRef.current=c.getContext("2d").getImageData(0,0,c.width,c.height);}
     if((tool==="brush"||tool==="eraser")&&inBounds(pt)){const c=canvasRef.current;paintDot(c.getContext("2d"),pt.x,pt.y,tool==="eraser"?brushSz*2:brushSz,tool==="eraser"?PX_FREE:drawColor);}
-  },[tool,drawColor,brushSz,toXY,saveSnap,finishPolygon,maps,rooms,carriers,objects,startPoses,selectedStartTask,setStartPoseForTask,waypoints,goals,mapLoaded,slamMode]);
+  },[tool,drawColor,brushSz,toXY,saveSnap,finishPolygon,maps,rooms,carriers,objects,startPoses,selectedStartTask,waypoints,goals,mapLoaded,slamMode]);
 
   // ── Double click → close polygon ──
   const onDblClick=useCallback((e)=>{
@@ -2774,7 +2827,11 @@ export default function Nav2MapEditor() {
       if(Math.hypot(dx,dy)>3){
         const theta=Math.atan2(-dy,dx);
         draggingRef.current=true;
-        setActiveStartPose(p=>p?{...p,theta}:p);
+        const next=startDraftRef.current?{...startDraftRef.current,theta}:null;
+        if(next){
+          startDraftRef.current=next;
+          setStartDraft(next);
+        }
       }
       return;
     }
@@ -2818,7 +2875,7 @@ export default function Nav2MapEditor() {
       ctx.putImageData(snapRef.current,0,0);drawShapePreview(ctx,shapeStart.current.x,shapeStart.current.y,pt.x,pt.y,e.shiftKey,tool);
     }
     lastPt.current=pt;
-  },[tool,drawColor,brushSz,toXY,screenToCanvas,drawOverlay,maps,rooms,carriers,objects,startPoses,setStartPoseForTask,setActiveStartPose,goals]);
+  },[tool,drawColor,brushSz,toXY,screenToCanvas,drawOverlay,maps,rooms,carriers,objects,startPoses,setStartPoseForTask,goals]);
 
   // ── Mouse Up ──
   const onMouseUp=useCallback((e)=>{
@@ -2837,10 +2894,15 @@ export default function Nav2MapEditor() {
     // Nav2 start direction drag complete
     if(tool==="startPose"&&startDragRef.current!=null){
       const s=shapeStart.current;
+      const draft=startDraftRef.current;
       startDragRef.current=null; shapeStart.current=null;
       draggingRef.current=false;
-      if(s) setStatus(`⌂ ${selectedStartTask} 시작점 (${s.x},${s.y})`);
-      setTimeout(saveSnap,0);
+      if(draft){
+        setStartDlg({pose:draft,defaultTask:draft.task,defaultId:draft.id});
+        setStatus("⌂ 시작점 task/ID 선택");
+      }else if(s){
+        setStatus(`⌂ 시작점 (${s.x},${s.y})`);
+      }
       return;
     }
 
@@ -2878,9 +2940,41 @@ export default function Nav2MapEditor() {
       }
     }
     snapRef.current=null;shapeStart.current=null;
-  },[tool,saveSnap,selectedStartTask]);
+  },[tool,saveSnap]);
 
   const onMouseLeave=useCallback(()=>{setCursor(v=>({...v,vis:false}));if(hoverSemRef.current){hoverSemRef.current=null;drawOverlay();}onMouseUp();},[onMouseUp,drawOverlay]);
+
+  const cancelStartDialog=useCallback(()=>{
+    startDraftRef.current=null;
+    setStartDraft(null);
+    setStartDlg(null);
+  },[]);
+
+  const onStartConfirm=useCallback((task,nextRaw)=>{
+    if(!startDlg)return false;
+    const key=START_TASKS.includes(task)?task:DEFAULT_START_TASK;
+    const nextId=String(nextRaw||"").trim();
+    if(!nextId){setStatus("⚠ 시작점 ID는 비워둘 수 없습니다");return false;}
+    const usedIds=[
+      ...maps.map(m=>m.id),...rooms.map(r=>r.id),...carriers.map(c=>c.id),...objects.map(o=>o.id),
+      ...goals.map(g=>g.id),...waypoints.map((wp,i)=>wp.id||`w${i+1}`),
+      ...Object.entries(startPoses).filter(([t])=>t!==key).map(([,p])=>p?.id).filter(Boolean),
+    ];
+    if(usedIds.includes(nextId)){
+      setStatus(`⚠ 이미 있는 ID: ${nextId}`);
+      return false;
+    }
+    const nextPose={...startDlg.pose,id:nextId,task:key,label:key};
+    setStartPoseForTask(key,nextPose);
+    setSelectedStartTask(key);
+    setSelSemId(nextId);setSelWpIdx(null);
+    startDraftRef.current=null;
+    setStartDraft(null);
+    setStartDlg(null);
+    setTimeout(saveSnap,0);
+    setStatus(`⌂ 시작점 설정: ${key} (${nextId})`);
+    return true;
+  },[startDlg,maps,rooms,carriers,objects,goals,waypoints,startPoses,setStartPoseForTask,saveSnap]);
 
   // ── Semantic confirm ──
   const onSemConfirm=useCallback((type,label)=>{
@@ -3020,7 +3114,8 @@ export default function Nav2MapEditor() {
       if((e.ctrlKey||e.metaKey)&&e.key==="z"){e.preventDefault();undo();return;}
       if((e.ctrlKey||e.metaKey)&&(e.key==="y"||(e.shiftKey&&e.key==="Z"))){e.preventDefault();redo();return;}
       if(e.key==="Escape"){
-        setSelSemId(null);setSemDlg(null);setGoalDlg(null);
+        setSelSemId(null);setSemDlg(null);setGoalDlg(null);setStartDlg(null);setStartDraft(null);
+        startDraftRef.current=null;startDragRef.current=null;
         if(polyVertsRef.current.length>0){setPolyVerts([]);setPolySnap(false);setStatus("⎋ 다각형 취소");}
         return;
       }
@@ -3488,10 +3583,11 @@ export default function Nav2MapEditor() {
     const pose=robotPoseToCanvas();
     if(!pose)return;
     if(kind==="start"){
-      const newId=startPoses[selectedStartTask]?.id||nextStartPoseId(startPoses);
-      setStartPoseForTask(selectedStartTask,{id:newId,task:selectedStartTask,label:selectedStartTask,...pose});
-      setSelSemId(newId);setSelWpIdx(null);
-      setStatus(`⌂ 현재 로봇 pose를 ${selectedStartTask} 시작점으로 지정`);
+      const task=nextStartTask(startPoses,selectedStartTask);
+      const newId=startPoses[task]?.id||nextStartPoseId(startPoses);
+      setStartDlg({pose:{id:newId,task,label:task,...pose},defaultTask:task,defaultId:newId});
+      setStatus("⌂ 시작점 task/ID 선택");
+      return;
     }else if(kind==="waypoint"){
       const newId=wuid();
       const wp={id:newId,label:newId,...pose};
@@ -3507,7 +3603,7 @@ export default function Nav2MapEditor() {
       setStatus(`🎯 현재 로봇 pose를 시맨틱 골로 추가${hitRoom?` (${hitRoom.label})`:""}`);
     }
     setTimeout(saveSnap,0);
-  },[robotPoseToCanvas,saveSnap,selectedStartTask,startPoses,setStartPoseForTask]);
+  },[robotPoseToCanvas,saveSnap,selectedStartTask,startPoses]);
 
   const startRosbridge=useCallback(async()=>{
     if(!hostAPI?.rosbridgeStart){setStatus("⚠ rosbridge 실행은 Electron 또는 robot backend에서만 가능합니다");return;}
@@ -3996,7 +4092,25 @@ export default function Nav2MapEditor() {
           <button style={btn()} onClick={fitView}>⊞</button>
           <div style={{width:1,height:16,background:"rgba(0,212,255,0.15)"}}/>
           <button style={btn()} onClick={()=>setShowMetaDlg(true)}>⚙ 메타</button>
-          <div style={{width:1,height:16,background:"rgba(0,212,255,0.15)"}}/>
+          <div style={{flex:"1 1 180px"}}/>
+          <div style={{display:"flex",alignItems:"center",gap:5,marginLeft:"auto",flexWrap:"wrap",justifyContent:"flex-end"}}>
+            <button style={btn(showSemPanel)} onClick={()=>setShowSemPanel(v=>!v)}>🗺 시맨틱{semanticItemCount>0&&` (${semanticItemCount})`}</button>
+            <button style={btn(showCatalogPanel)} onClick={()=>setShowCatalogPanel(v=>!v)}>📋 MD목록 ({catalogCounts(semanticCatalog).rooms}/{catalogCounts(semanticCatalog).locations}/{catalogCounts(semanticCatalog).objects})</button>
+            <button style={btn(showRos2Panel)} onClick={()=>setShowRos2Panel(v=>!v)}>🤖 ROS2{ros2State===ROS2_STATES.CONNECTED&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
+            <button style={btn(showSlamPanel||slamMode)} onClick={()=>setShowSlamPanel(v=>!v)}>🧭 SLAM{slamMode&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
+            <button style={btn(show3DView)} onClick={()=>setShow3DView(v=>!v)}>🧊 3D</button>
+            {show3DView&&(
+              <div style={{display:"flex",gap:4,alignItems:"center",marginLeft:2}}>
+                {[["free","Free"],["top","Top"]].map(([id,l])=>(
+                  <button key={id} style={{...btn(view3DMode===id),padding:"2px 7px",fontSize:10}} onClick={()=>setView3DMode(id)}>{l}</button>
+                ))}
+              </div>
+            )}
+            <span style={{color:"rgba(0,212,255,0.3)",fontSize:10}}>줌 {Math.round(zoom*100)}%{rotation%360!==0&&` · ${rotation%360}°`}</span>
+          </div>
+        </div>
+
+        <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap",paddingTop:2,borderTop:"1px solid rgba(0,212,255,0.06)"}}>
           <span style={{fontSize:10,color:"rgba(0,212,255,0.38)",letterSpacing:1,marginRight:2}}>ROS2</span>
           {hasHostAPI&&(
             rosbridgeRunning?(
@@ -4056,22 +4170,6 @@ export default function Nav2MapEditor() {
               <button style={{...btn(),padding:"1px 7px",fontSize:10,color:"#00ff88",borderColor:"rgba(0,255,100,0.4)"}} onClick={()=>polyVerts.length>=3&&finishPolygon([...polyVerts])} disabled={polyVerts.length<3}>완성(Enter)</button>
             </div>
           )}
-          <div style={{flex:"1 1 180px"}}/>
-          <div style={{display:"flex",alignItems:"center",gap:5,marginLeft:"auto",flexWrap:"wrap",justifyContent:"flex-end"}}>
-            <button style={btn(showSemPanel)} onClick={()=>setShowSemPanel(v=>!v)}>🗺 시맨틱{semanticItemCount>0&&` (${semanticItemCount})`}</button>
-            <button style={btn(showCatalogPanel)} onClick={()=>setShowCatalogPanel(v=>!v)}>📋 MD목록 ({catalogCounts(semanticCatalog).rooms}/{catalogCounts(semanticCatalog).locations}/{catalogCounts(semanticCatalog).objects})</button>
-            <button style={btn(showRos2Panel)} onClick={()=>setShowRos2Panel(v=>!v)}>🤖 ROS2{ros2State===ROS2_STATES.CONNECTED&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
-            <button style={btn(showSlamPanel||slamMode)} onClick={()=>setShowSlamPanel(v=>!v)}>🧭 SLAM{slamMode&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
-            <button style={btn(show3DView)} onClick={()=>setShow3DView(v=>!v)}>🧊 3D</button>
-            {show3DView&&(
-              <div style={{display:"flex",gap:4,alignItems:"center",marginLeft:2}}>
-                {[["free","Free"],["top","Top"]].map(([id,l])=>(
-                  <button key={id} style={{...btn(view3DMode===id),padding:"2px 7px",fontSize:10}} onClick={()=>setView3DMode(id)}>{l}</button>
-                ))}
-              </div>
-            )}
-            <span style={{color:"rgba(0,212,255,0.3)",fontSize:10}}>줌 {Math.round(zoom*100)}%{rotation%360!==0&&` · ${rotation%360}°`}</span>
-          </div>
         </div>
       </div>
 
@@ -4132,16 +4230,6 @@ export default function Nav2MapEditor() {
               </div>
             ))}
             <div style={{width:"80%",height:1,background:"rgba(0,212,255,0.1)",margin:"5px 0"}}/>
-            <div style={{width:"100%",boxSizing:"border-box",padding:"0 3px 5px",display:"flex",flexDirection:"column",gap:3}}>
-              <span style={{fontSize:10,color:"rgba(0,230,118,0.58)",fontWeight:"bold",textAlign:"center"}}>시작 task</span>
-              <select
-                value={selectedStartTask}
-                onChange={e=>{setSelectedStartTask(e.target.value);setSelSemId(startPoses[e.target.value]?.id||null);setSelWpIdx(null);}}
-                style={{...INPUT,width:"100%",boxSizing:"border-box",padding:"3px 4px",fontSize:10}}
-              >
-                {START_TASKS.map(task=><option key={task} value={task}>{task}</option>)}
-              </select>
-            </div>
             {SEM_EXTRA_TOOLS.map(t=>{
               const captureKind=SEM_CAPTURE_KINDS[t.id];
               const canCapture=mapLoaded&&ros2State===ROS2_STATES.CONNECTED;
@@ -4370,8 +4458,7 @@ export default function Nav2MapEditor() {
         {showSemPanel&&(
           <SemanticPanel
             maps={maps} rooms={rooms} carriers={carriers} objects={objects} waypoints={waypoints} goals={goals}
-            startPose={startPose} startPoses={startPoses} startTasks={START_TASKS}
-            selectedStartTask={selectedStartTask} setSelectedStartTask={setSelectedStartTask}
+            startPoses={startPoses} startTasks={START_TASKS} setSelectedStartTask={setSelectedStartTask}
             selId={selSemId} setSelId={setSelSemId}
             selWpIdx={selWpIdx} setSelWpIdx={setSelWpIdx}
             onDeleteMap={id=>{setMaps(p=>p.filter(m=>m.id!==id));if(selSemId===id)setSelSemId(null);}}
@@ -4532,6 +4619,9 @@ export default function Nav2MapEditor() {
         if(goalDlg.goalId) setGoals(p=>p.filter(g=>g.id!==goalDlg.goalId));
         setGoalDlg(null);
       }}/>}
+
+      {/* ── START POSE DIALOG ── */}
+      {startDlg&&<StartPoseDialog startTasks={START_TASKS} startPoses={startPoses} pose={startDlg.pose} defaultTask={startDlg.defaultTask} defaultId={startDlg.defaultId} onConfirm={onStartConfirm} onCancel={cancelStartDialog}/>}
 
       {/* ── ROBOT PC FILE BROWSER ── */}
       {fileDialog&&hostAPI?.isRobotBackend&&(
