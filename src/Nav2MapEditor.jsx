@@ -161,7 +161,7 @@ const PX_OCCUPIED = 0, PX_FREE = 254, PX_UNKNOWN = 205;
 const SNAP_RADIUS = 10;
 const START_TASKS = ["HRI","PnP","GPSR","DL","Restaurant"];
 const DEFAULT_START_TASK = START_TASKS[0];
-const QUICK_MAP_DIR = "/home/nvidia/rby1_nav2/install/rby1_nav2/share/rby1_nav2/maps";
+const QUICK_MAP_DIR = "/home/nvidia/rby1_nav2/src/rby1_nav2/maps";
 const QUICK_MAP_NAMES = {1:"map_first",2:"map_second"};
 const DEFAULT_WORKSPACE_ROOT = "/home/nvidia/rby1_nav2";
 const DEFAULT_MAP_SEARCH_DIR = "/home/nvidia/rby1_nav2/src/rby1_nav2/maps";
