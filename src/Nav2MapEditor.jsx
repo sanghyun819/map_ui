@@ -1143,8 +1143,31 @@ function CatalogPanel({catalog,sources,hasHostAPI,onImport,onFileImport,onRemove
   );
 }
 
+function CommitInput({value,onCommit,style,...props}) {
+  const [draft,setDraft]=useState(value||"");
+  useEffect(()=>{setDraft(value||"");},[value]);
+  const commit=()=>{
+    const current=String(value||"");
+    const next=String(draft||"").trim();
+    if(next===current){setDraft(current);return;}
+    const ok=onCommit?.(next);
+    if(ok===false)setDraft(current);
+  };
+  return(
+    <input {...props} value={draft}
+      onChange={e=>setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e=>{
+        if(e.key==="Enter")e.currentTarget.blur();
+        else if(e.key==="Escape"){setDraft(value||"");e.currentTarget.blur();}
+      }}
+      onClick={e=>e.stopPropagation()}
+      style={style}/>
+  );
+}
+
 // ─── Semantic panel (4-level hierarchy: map > room > carrier > object) ───────
-function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,setWaypoints,onImportJSON,onExportJSON,toWorld,resolution,typeOptions}) {
+function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameGoalId,setWaypoints,onImportJSON,onExportJSON,toWorld,resolution,typeOptions}) {
   const res=resolution||0.05;
   const [expanded,setExpanded]=useState({});
   const toggle=(id)=>setExpanded(p=>({...p,[id]:!p[id]}));
@@ -1458,6 +1481,11 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPose,se
                 </div>
                 {isSel&&(
                   <div style={{marginTop:4,display:"flex",flexDirection:"column",gap:3}} onClick={e=>e.stopPropagation()}>
+                    <div style={{display:"flex",alignItems:"center",gap:4}}>
+                      <span style={{fontSize:9,color:"rgba(255,102,128,0.5)",whiteSpace:"nowrap"}}>ID</span>
+                      <CommitInput value={g.id} onCommit={next=>onRenameGoalId?.(g.id,next)}
+                        style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}/>
+                    </div>
                     <div style={{display:"flex",alignItems:"center",gap:4}}>
                       <span style={{fontSize:9,color:"rgba(255,102,128,0.5)",whiteSpace:"nowrap"}}>라벨</span>
                       <input value={g.label||""} onChange={e=>onReassign("goal",g.id,"label",e.target.value)}
@@ -4198,6 +4226,18 @@ export default function Nav2MapEditor() {
               else if(layer==="carrier") setCarriers(p=>p.map(c=>c.id===id?{...c,[field]:value}:c));
               else if(layer==="object") setObjects(p=>p.map(o=>o.id===id?{...o,[field]:value}:o));
               else if(layer==="goal") setGoals(p=>p.map(g=>g.id===id?{...g,[field]:value}:g));
+            }}
+            onRenameGoalId={(oldId,nextRaw)=>{
+              const nextId=String(nextRaw||"").trim();
+              if(!nextId){setStatus("⚠ 골 ID는 비워둘 수 없습니다");return false;}
+              if(goalsRef.current.some(g=>g.id===nextId&&g.id!==oldId)){
+                setStatus(`⚠ 이미 있는 골 ID: ${nextId}`);
+                return false;
+              }
+              setGoals(p=>p.map(g=>g.id===oldId?{...g,id:nextId}:g));
+              if(selSemId===oldId)setSelSemId(nextId);
+              setStatus(`🎯 골 ID 변경: ${oldId} → ${nextId}`);
+              return true;
             }}
             setWaypoints={setWaypoints}
             onImportJSON={hasHostAPI?handleSemanticOpen:null}
