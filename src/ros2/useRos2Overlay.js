@@ -132,11 +132,34 @@ function decodeRosBytes(data) {
   return new Uint8Array();
 }
 
+function findImagePayload(bytes) {
+  if (!bytes?.length) return bytes;
+  const png = [0x89, 0x50, 0x4e, 0x47];
+  const jpg = [0xff, 0xd8, 0xff];
+  const riff = [0x52, 0x49, 0x46, 0x46];
+  const max = Math.min(bytes.length, 128);
+  for (let i = 0; i < max; i++) {
+    if (png.every((v, j) => bytes[i + j] === v)) return bytes.subarray(i);
+    if (jpg.every((v, j) => bytes[i + j] === v)) return bytes.subarray(i);
+    if (riff.every((v, j) => bytes[i + j] === v)) return bytes.subarray(i);
+  }
+  return bytes;
+}
+
+function imageMime(bytes, format = "") {
+  const fmt = String(format || "").toLowerCase();
+  if (bytes?.[0] === 0x89 && bytes?.[1] === 0x50 && bytes?.[2] === 0x4e && bytes?.[3] === 0x47) return "png";
+  if (bytes?.[0] === 0xff && bytes?.[1] === 0xd8) return "jpeg";
+  if (bytes?.[0] === 0x52 && bytes?.[1] === 0x49 && bytes?.[2] === 0x46 && bytes?.[3] === 0x46) return "webp";
+  if (fmt.includes("png") || fmt.includes("compresseddepth")) return "png";
+  if (fmt.includes("webp")) return "webp";
+  return "jpeg";
+}
+
 function compressedImageDataUrl(msg) {
-  const bytes = decodeRosBytes(msg.data);
+  const bytes = findImagePayload(decodeRosBytes(msg.data));
   if (!bytes.length) return null;
-  const fmt = String(msg.format || "jpeg").toLowerCase();
-  const mime = fmt.includes("png") ? "png" : fmt.includes("webp") ? "webp" : "jpeg";
+  const mime = imageMime(bytes, msg.format || "jpeg");
   return `data:image/${mime};base64,${bytesToBase64(bytes)}`;
 }
 
@@ -152,8 +175,8 @@ function rawImageDataUrl(msg) {
   const out = new ImageData(width, height);
   const data = out.data;
 
-  if (encoding === "rgb8" || encoding === "bgr8" || encoding === "rgba8" || encoding === "bgra8") {
-    const channels = encoding.includes("rgba") || encoding.includes("bgra") ? 4 : 3;
+  if (encoding === "rgb8" || encoding === "bgr8" || encoding === "rgba8" || encoding === "bgra8" || encoding === "8uc3" || encoding === "8uc4") {
+    const channels = encoding.includes("rgba") || encoding.includes("bgra") || encoding === "8uc4" ? 4 : 3;
     const bgr = encoding.startsWith("bgr");
     for (let y = 0; y < height; y++) {
       const row = y * step;
@@ -204,6 +227,34 @@ function rawImageDataUrl(msg) {
       data[dst + 1] = Math.round(g * 0.9);
       data[dst + 2] = 255 - g;
       data[dst + 3] = v > 0 ? 255 : 80;
+    }
+  } else if (encoding.startsWith("bayer_")) {
+    for (let y = 0; y < height; y++) {
+      const row = y * step;
+      for (let x = 0; x < width; x++) {
+        const v = bytes[row + x] || 0;
+        const dst = (y * width + x) * 4;
+        data[dst] = data[dst + 1] = data[dst + 2] = v;
+        data[dst + 3] = 255;
+      }
+    }
+  } else if (encoding === "yuv422" || encoding === "yuyv" || encoding === "yuyv422") {
+    for (let y = 0; y < height; y++) {
+      const row = y * step;
+      for (let x = 0; x < width; x += 2) {
+        const src = row + x * 2;
+        const y0 = bytes[src] || 0, u = (bytes[src + 1] || 128) - 128;
+        const y1 = bytes[src + 2] || 0, v = (bytes[src + 3] || 128) - 128;
+        const write = (px, yy) => {
+          const dst = (y * width + px) * 4;
+          data[dst] = Math.max(0, Math.min(255, yy + 1.402 * v));
+          data[dst + 1] = Math.max(0, Math.min(255, yy - 0.344136 * u - 0.714136 * v));
+          data[dst + 2] = Math.max(0, Math.min(255, yy + 1.772 * u));
+          data[dst + 3] = 255;
+        };
+        write(x, y0);
+        if (x + 1 < width) write(x + 1, y1);
+      }
     }
   } else {
     return null;
@@ -432,6 +483,7 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
     pathTopicCount: 0,
     costmapTopicCount: 0,
     footprintTopicCount: 0,
+    cameraTopicCount: 0,
     robotModelLinkCount: 0,
     robotDescriptionLoaded: false,
     tfResolved: false,
@@ -587,6 +639,7 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
       statsRef.current.pathTopicCount = 0;
       statsRef.current.costmapTopicCount = 0;
       statsRef.current.footprintTopicCount = 0;
+      statsRef.current.cameraTopicCount = 0;
       statsRef.current.robotModelLinkCount = 0;
       statsRef.current.robotDescriptionLoaded = false;
       return;
@@ -828,13 +881,30 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
         activeCameraTopics.add(topic);
         const unsub = bridge.subscribe(topic, v.type, (msg) => {
           try {
+            const encoding = msg.encoding || msg.format || typeSuffix;
+            const width = Number(msg.width) || null;
+            const height = Number(msg.height) || null;
             const url = typeSuffix === "CompressedImage"
               ? compressedImageDataUrl(msg)
               : rawImageDataUrl(msg);
-            if (url) cameraRef.current = { url, topic, encoding: msg.encoding || msg.format || typeSuffix };
+            const dataBytes = decodeRosBytes(msg.data).length;
+            const ts = Date.now();
+            if (url) {
+              cameraRef.current = { url, topic, encoding, width, height, bytes: dataBytes, ts, error: "" };
+              statsRef.current.lastError = "";
+            } else {
+              const reason = dataBytes === 0
+                ? "empty image data"
+                : `unsupported image encoding/format: ${encoding || "unknown"}`;
+              cameraRef.current = { url: null, topic, encoding, width, height, bytes: dataBytes, ts, error: reason };
+              statsRef.current.lastError = `image: ${reason}`;
+            }
+            statsRef.current.cameraTopicCount = activeCameraTopics.size;
             requestDraw();
           } catch (e) {
             statsRef.current.lastError = `image: ${e.message}`;
+            cameraRef.current = { url: null, topic, encoding: typeSuffix, ts: Date.now(), error: e.message };
+            requestDraw();
           }
         }, 200);
         unsubsRef.current.push(unsub);
@@ -871,6 +941,7 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
     if (cameraRef.current && !activeCameraTopics.has(cameraRef.current.topic)) {
       cameraRef.current = null;
     }
+    statsRef.current.cameraTopicCount = activeCameraTopics.size;
     requestDraw();
 
     return () => {
@@ -891,6 +962,7 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
       statsRef.current.lidarTopicCount = 0;
       statsRef.current.poseTopicCount = 0;
       statsRef.current.pathTopicCount = 0;
+      statsRef.current.cameraTopicCount = 0;
       return;
     }
 

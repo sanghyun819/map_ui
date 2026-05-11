@@ -474,7 +474,7 @@ export default function Ros2Panel({ bridge, defaultUrl = "ws://localhost:9090", 
         )}
 
         {/* ── Camera / depth preview ── */}
-        {connState === STATES.CONNECTED && cameraFrame?.url && (
+        {connState === STATES.CONNECTED && cameraFrame && (
           <div style={{ ...S.section }}>
             <div style={S.sectionLabel}>
               <span>Camera Preview</span>
@@ -483,9 +483,15 @@ export default function Ros2Panel({ bridge, defaultUrl = "ws://localhost:9090", 
               </span>
             </div>
             <div style={{ border: "1px solid rgba(0,212,255,0.12)", background: "rgba(0,0,0,0.35)", borderRadius: 4, padding: 4 }}>
-              <img src={cameraFrame.url} alt="" style={{ display: "block", width: "100%", maxHeight: 180, objectFit: "contain", imageRendering: "auto" }} />
+              {cameraFrame.url ? (
+                <img src={cameraFrame.url} alt="" style={{ display: "block", width: "100%", maxHeight: 180, objectFit: "contain", imageRendering: "auto" }} />
+              ) : (
+                <div style={{ minHeight: 88, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", color: "#ff6680", fontSize: 10, lineHeight: 1.5, padding: 8 }}>
+                  {cameraFrame.error || "image frame received, but preview decode failed"}
+                </div>
+              )}
               <div style={{ fontSize: 8, color: "#4a7080", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {cameraFrame.encoding}
+                {cameraFrame.encoding}{cameraFrame.width&&cameraFrame.height?` · ${cameraFrame.width}×${cameraFrame.height}`:""}{cameraFrame.bytes?` · ${cameraFrame.bytes} bytes`:""}
               </div>
             </div>
           </div>
@@ -527,6 +533,10 @@ export default function Ros2Panel({ bridge, defaultUrl = "ws://localhost:9090", 
               <div style={S.row}>
                 <span style={{ color: "#4a7080", width: 55 }}>Footprint</span>
                 <span style={{ color: (st.footprintTopicCount || 0) > 0 ? "#00bcd4" : "#3a5060" }}>{st.footprintTopicCount || 0}</span>
+              </div>
+              <div style={S.row}>
+                <span style={{ color: "#4a7080", width: 55 }}>Camera</span>
+                <span style={{ color: (st.cameraTopicCount || 0) > 0 ? "#00d4ff" : "#3a5060" }}>{st.cameraTopicCount || 0}</span>
               </div>
               <div style={S.row}>
                 <span style={{ color: "#4a7080", width: 55 }}>Robot</span>
