@@ -578,15 +578,17 @@ function syncSemanticCounters(next){
   _oIdx=maxIdNumber("o",next.objects);
   _wIdx=maxIdNumber("w",next.waypoints);
   _gIdx=maxIdNumber("g",next.goals);
+  _glIdx=maxIdNumber("gl",next.goalList);
 }
 
-let _mIdx=0,_rIdx=0,_cIdx=0,_oIdx=0,_wIdx=0,_gIdx=0;
+let _mIdx=0,_rIdx=0,_cIdx=0,_oIdx=0,_wIdx=0,_gIdx=0,_glIdx=0;
 const muid=()=>`m${++_mIdx}`;
 const ruid=()=>`r${++_rIdx}`;
 const cuid=()=>`c${++_cIdx}`;
 const ouid=()=>`o${++_oIdx}`;
 const wuid=()=>`w${++_wIdx}`;
 const guid=()=>`g${++_gIdx}`;
+const gluid=()=>`gl${++_glIdx}`;
 
 // ─── UI Style helpers ──────────────────────────────────────────────────────────
 const btn=(active=false,danger=false)=>({
@@ -989,7 +991,8 @@ function RobotFileBrowser({api,request,onClose}){
       if(saveMode)setFileName(basenameFromPath(def)||"");
       let initial=r.home||r.cwd||r.root||"/";
       if(def&&pathLooksAbsolute(def)){
-        initial=saveMode?dirnameFromPath(def):(directoryMode?def:dirnameFromPath(def));
+        const defaultLooksDir=!basenameFromPath(def).includes(".");
+        initial=saveMode?dirnameFromPath(def):(directoryMode||defaultLooksDir?def:dirnameFromPath(def));
       }
       await loadDir(initial||"/");
     })();
@@ -1249,13 +1252,13 @@ function CommitInput({value,onCommit,style,...props}) {
 }
 
 // ─── Semantic panel (4-level hierarchy: map > room > carrier > object) ───────
-function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPoses,startTasks,setSelectedStartTask,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameGoalId,onRenameStartPoseId,setWaypoints,onImportJSON,onImportFile,onExportJSON,toWorld,resolution,typeOptions}) {
+function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,goalList,startPoses,startTasks,setSelectedStartTask,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameGoalId,onRenameStartPoseId,onAddGoalList,onUpdateGoalList,onDeleteGoalList,setWaypoints,onImportJSON,onImportFile,onExportJSON,toWorld,resolution,typeOptions}) {
   const res=resolution||0.05;
   const [expanded,setExpanded]=useState({});
   const toggle=(id)=>setExpanded(p=>({...p,[id]:!p[id]}));
   const startPoseCount=Object.values(startPoses||{}).filter(Boolean).length;
   const startPoseEntries=startTasks.map(task=>({task,pose:startPoses?.[task]})).filter(x=>x.pose);
-  const goalListCount=goals.filter(g=>g.required).length;
+  const goalListCount=goalList.length;
 
   const insidePoly=(poly,obj)=>{
     if(!poly)return false;
@@ -1462,10 +1465,10 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPoses,s
   return(
     <div style={{width:260,background:"#070f1e",borderLeft:"1px solid rgba(0,212,255,0.12)",display:"flex",flexDirection:"column",flexShrink:0}}>
       <div style={{padding:"9px 14px",borderBottom:"1px solid rgba(0,212,255,0.12)",color:"#00d4ff",fontWeight:"bold",letterSpacing:1,fontSize:12,display:"flex",justifyContent:"space-between"}}>
-        <span>🗺 시맨틱 레이어</span><span style={{opacity:.4,fontSize:10}}>{maps.length}맵·{rooms.length}방·{carriers.length}캐·{objects.length}객·{goals.length}골{goalListCount?`/L${goalListCount}`:""}·{waypoints.length}WP{startPoseCount?`·시작${startPoseCount}`:""}</span>
+        <span>🗺 시맨틱 레이어</span><span style={{opacity:.4,fontSize:10}}>{maps.length}맵·{rooms.length}방·{carriers.length}캐·{objects.length}객·{goals.length}골·목록{goalListCount}·{waypoints.length}WP{startPoseCount?`·시작${startPoseCount}`:""}</span>
       </div>
       <div style={{flex:1,overflow:"auto",padding:8}}>
-        {maps.length===0&&rooms.length===0&&carriers.length===0&&objects.length===0&&waypoints.length===0&&goals.length===0&&!startPoseCount&&(
+        {maps.length===0&&rooms.length===0&&carriers.length===0&&objects.length===0&&waypoints.length===0&&goals.length===0&&goalList.length===0&&!startPoseCount&&(
           <div style={{color:"rgba(0,212,255,0.22)",textAlign:"center",padding:"24px 8px",lineHeight:2.2,fontSize:11}}>
             시맨틱 항목 없음<br/>
             <span style={{fontSize:10,opacity:.7}}>맵→방→캐리어→객체 · S:시작점 · 9:골 · W:웨이포인트</span>
@@ -1549,10 +1552,45 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPoses,s
           })}
         </div>
       )}
+      {/* ── Goal list section ── */}
+      <div style={{borderTop:"1px solid rgba(0,230,118,0.16)",marginTop:4}}>
+        <div style={{padding:"6px 10px 4px",fontSize:10,color:"#00e676",letterSpacing:1,fontWeight:"bold",display:"flex",alignItems:"center",gap:6}}>
+          <span>☑ GOAL LIST ({goalList.length})</span>
+          <button onClick={onAddGoalList} style={{...btn(),marginLeft:"auto",padding:"1px 6px",fontSize:10,color:"#00e676",borderColor:"rgba(0,230,118,0.28)"}}>＋</button>
+        </div>
+        <datalist id="semantic-goal-id-options">
+          {goals.map(g=><option key={g.id} value={g.id}>{g.label||g.id}</option>)}
+        </datalist>
+        {goalList.length===0?(
+          <div style={{margin:"0 8px 6px",padding:"6px 8px",borderRadius:5,color:"rgba(0,230,118,0.42)",fontSize:10,lineHeight:1.5,border:"1px solid rgba(0,230,118,0.08)"}}>
+            + 버튼으로 라벨과 goal_id를 먼저 만들어 저장할 수 있습니다.
+          </div>
+        ):goalList.map((item,i)=>{
+          const linkedGoal=goals.find(g=>g.id===item.goal_id);
+          return(
+            <div key={item.id||i} style={{margin:"0 8px 5px",padding:"6px 8px",borderRadius:5,background:"rgba(0,230,118,0.05)",border:"1px solid rgba(0,230,118,0.13)"}}>
+              <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:5}}>
+                <span style={{color:"#00e676",fontSize:10,fontWeight:"bold"}}>{i+1}</span>
+                <span style={{color:"rgba(0,230,118,0.42)",fontSize:9,flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.id}</span>
+                <button onClick={()=>onDeleteGoalList(item.id)} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                <input value={item.label||""} onChange={e=>onUpdateGoalList(item.id,{label:e.target.value})}
+                  placeholder="라벨" style={{...INPUT,width:"100%",boxSizing:"border-box",padding:"3px 5px",fontSize:10}}/>
+                <input value={item.goal_id||""} onChange={e=>onUpdateGoalList(item.id,{goal_id:e.target.value.trim()})}
+                  list="semantic-goal-id-options" placeholder="goal_id" style={{...INPUT,width:"100%",boxSizing:"border-box",padding:"3px 5px",fontSize:10}}/>
+              </div>
+              <div style={{marginTop:4,color:linkedGoal?"rgba(0,230,118,0.48)":"rgba(0,212,255,0.3)",fontSize:8,lineHeight:1.4}}>
+                {linkedGoal?`${linkedGoal.label||linkedGoal.id}에 연결됨`:"pose 없이 저장 가능 · 나중에 같은 goal_id와 매칭"}
+              </div>
+            </div>
+          );
+        })}
+      </div>
       {/* ── Goals section ── */}
       {goals.length>0&&(
         <div style={{borderTop:"1px solid rgba(255,102,128,0.15)",marginTop:4}}>
-          <div style={{padding:"6px 10px 4px",fontSize:10,color:"#ff6680",letterSpacing:1,fontWeight:"bold"}}>🎯 GOALS ({goals.length}){goalListCount?` · LIST ${goalListCount}`:""}</div>
+          <div style={{padding:"6px 10px 4px",fontSize:10,color:"#ff6680",letterSpacing:1,fontWeight:"bold"}}>🎯 GOALS ({goals.length})</div>
           {goals.map(g=>{
             const isSel=selId===g.id;
             const room=rooms.find(r=>r.id===g.room_id);
@@ -1566,10 +1604,7 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPoses,s
                 <div style={{display:"flex",alignItems:"center",gap:5}}>
                   <span style={{fontSize:11,color:"#ff6680"}}>🎯</span>
                   <div style={{flex:1,minWidth:0}}>
-                    <div style={{color:"#ff6680",fontWeight:"bold",fontSize:11,display:"flex",alignItems:"center",gap:5,minWidth:0}}>
-                      <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{g.id}: {g.label}</span>
-                      {g.required&&<span style={{flexShrink:0,color:"#00e676",fontSize:8,letterSpacing:.8}}>LIST</span>}
-                    </div>
+                    <div style={{color:"#ff6680",fontWeight:"bold",fontSize:11,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{g.id}: {g.label}</div>
                     <div style={{color:"rgba(255,102,128,0.45)",fontSize:9}}>
                       {room?room.label:"미할당"} → {target?target.label:"대상 없음"} · {Math.round(g.theta*180/Math.PI)}°
                     </div>
@@ -1577,20 +1612,10 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPoses,s
                       {(()=>{const w=toWorld(g.x,g.y);return `(${w.x}, ${w.y})m`;})()}
                     </div>
                   </div>
-                  <label onClick={ev=>ev.stopPropagation()} style={{display:"inline-flex",alignItems:"center",gap:3,color:g.required?"#00e676":"rgba(255,102,128,0.45)",fontSize:9,cursor:"pointer",flexShrink:0}}>
-                    <input type="checkbox" checked={!!g.required} onChange={e=>onReassign("goal",g.id,"required",e.target.checked)}
-                      style={{width:12,height:12,accentColor:"#00e676",margin:0}}/>
-                    List
-                  </label>
                   <button onClick={ev=>{ev.stopPropagation();onDeleteGoal(g.id);}} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
                 </div>
                 {isSel&&(
                   <div style={{marginTop:4,display:"flex",flexDirection:"column",gap:3}} onClick={e=>e.stopPropagation()}>
-                    <label style={{display:"inline-flex",alignItems:"center",gap:5,color:"#00e676",fontSize:10,cursor:"pointer"}}>
-                      <input type="checkbox" checked={!!g.required} onChange={e=>onReassign("goal",g.id,"required",e.target.checked)}
-                        style={{width:12,height:12,accentColor:"#00e676",margin:0}}/>
-                      필요한 골 List에 포함
-                    </label>
                     <div style={{display:"flex",alignItems:"center",gap:4}}>
                       <span style={{fontSize:9,color:"rgba(255,102,128,0.5)",whiteSpace:"nowrap"}}>ID</span>
                       <CommitInput value={g.id} onCommit={next=>onRenameGoalId?.(g.id,next)}
@@ -1937,6 +1962,7 @@ export default function Nav2MapEditor() {
   const [carriers,    setCarriers]    = useState([]);
   const [objects,     setObjects]     = useState([]);
   const [goals,       setGoals]       = useState([]);
+  const [goalList,    setGoalList]    = useState([]);
   const [selSemId,    setSelSemId]    = useState(null);
   const [semDlg,      setSemDlg]      = useState(null);
   const [goalDlg,     setGoalDlg]     = useState(null); // {x, y, roomId}
@@ -2132,6 +2158,7 @@ export default function Nav2MapEditor() {
   const selectedStartTaskRef= useRef(selectedStartTask);
   const waypointsRef= useRef(waypoints);
   const goalsRef    = useRef(goals);
+  const goalListRef = useRef(goalList);
   useEffect(()=>{mapsRef.current=maps;},[maps]);
   useEffect(()=>{roomsRef.current=rooms;},[rooms]);
   useEffect(()=>{carriersRef.current=carriers;},[carriers]);
@@ -2140,19 +2167,20 @@ export default function Nav2MapEditor() {
   useEffect(()=>{selectedStartTaskRef.current=selectedStartTask;},[selectedStartTask]);
   useEffect(()=>{waypointsRef.current=waypoints;},[waypoints]);
   useEffect(()=>{goalsRef.current=goals;},[goals]);
+  useEffect(()=>{goalListRef.current=goalList;},[goalList]);
 
   const saveSnap=useCallback(()=>{
     const c=canvasRef.current;if(!c)return;
     const d=c.getContext("2d").getImageData(0,0,c.width,c.height);
     const copy=new ImageData(new Uint8ClampedArray(d.data),d.width,d.height);
-    const snap={img:copy, maps:[...mapsRef.current], rooms:[...roomsRef.current], carriers:[...carriersRef.current], objects:[...objectsRef.current], startPoses:{...startPosesRef.current}, selectedStartTask:selectedStartTaskRef.current, waypoints:[...waypointsRef.current], goals:[...goalsRef.current]};
+    const snap={img:copy, maps:[...mapsRef.current], rooms:[...roomsRef.current], carriers:[...carriersRef.current], objects:[...objectsRef.current], startPoses:{...startPosesRef.current}, selectedStartTask:selectedStartTaskRef.current, waypoints:[...waypointsRef.current], goals:[...goalsRef.current], goalList:[...goalListRef.current]};
     histRef.current=histRef.current.slice(0,histIdxRef.current+1);
     histRef.current.push(snap);if(histRef.current.length>40)histRef.current.shift();
     histIdxRef.current=histRef.current.length-1;
   },[]);
   const restoreSnap=useCallback((snap)=>{
     canvasRef.current?.getContext("2d").putImageData(snap.img,0,0);
-    setMaps(snap.maps||[]);setRooms(snap.rooms);setCarriers(snap.carriers);setObjects(snap.objects);setStartPoses(snap.startPoses||{});setSelectedStartTask(snap.selectedStartTask||DEFAULT_START_TASK);setWaypoints(snap.waypoints);setGoals(snap.goals||[]);
+    setMaps(snap.maps||[]);setRooms(snap.rooms);setCarriers(snap.carriers);setObjects(snap.objects);setStartPoses(snap.startPoses||{});setSelectedStartTask(snap.selectedStartTask||DEFAULT_START_TASK);setWaypoints(snap.waypoints);setGoals(snap.goals||[]);setGoalList(snap.goalList||[]);
   },[]);
   const undoingRef=useRef(false); // prevent snapshot during undo/redo restore
   const draggingRef=useRef(false); // prevent snapshot during drag-move
@@ -2167,7 +2195,7 @@ export default function Nav2MapEditor() {
     // Skip initial mount (saveSnap is called in initCanvas/loadPGMData)
     if(semVersionRef.current===0){semVersionRef.current=1;return;}
     saveSnap();
-  },[maps,rooms,carriers,objects,startPoses,selectedStartTask,waypoints,goals]); // eslint-disable-line react-hooks/exhaustive-deps
+  },[maps,rooms,carriers,objects,startPoses,selectedStartTask,waypoints,goals,goalList]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Init canvas ──
   const initCanvas=useCallback((w,h,fillV=PX_UNKNOWN)=>{
@@ -2175,7 +2203,7 @@ export default function Nav2MapEditor() {
     c.width=w;c.height=h;
     c.getContext("2d").fillStyle=`rgb(${fillV},${fillV},${fillV})`;c.getContext("2d").fillRect(0,0,w,h);
     setCanvasSize({w,h});histRef.current=[];histIdxRef.current=-1;saveSnap();
-    setMapLoaded(true);setMaps([]);setStartPoses({});setWaypoints([]);setRooms([]);setCarriers([]);setObjects([]);setGoals([]);setPolyVerts([]);setRotation(0);
+    setMapLoaded(true);setMaps([]);setStartPoses({});setWaypoints([]);setRooms([]);setCarriers([]);setObjects([]);setGoals([]);setGoalList([]);setPolyVerts([]);setRotation(0);
     _mIdx=0;_rIdx=0;_cIdx=0;_oIdx=0;_wIdx=0;_gIdx=0;
     const vp=vpRef.current;
     if(vp){const z=Math.min((vp.clientWidth-60)/w,(vp.clientHeight-60)/h,3);setZoom(z);setPan({x:(vp.clientWidth-w*z)/2,y:(vp.clientHeight-h*z)/2});}
@@ -2257,7 +2285,7 @@ export default function Nav2MapEditor() {
   const reprojectSemanticForMap = useCallback((fromMeta, fromSize, toMeta, toSize)=>{
     if(!fromMeta||!toMeta||!fromSize?.h||!toSize?.h)return;
     if(sameMapProjection(fromMeta,fromSize,toMeta,toSize))return;
-    const hasSemantic=mapsRef.current.length||roomsRef.current.length||carriersRef.current.length||objectsRef.current.length||goalsRef.current.length||waypointsRef.current.length||Object.keys(startPosesRef.current||{}).length;
+    const hasSemantic=mapsRef.current.length||roomsRef.current.length||carriersRef.current.length||objectsRef.current.length||goalsRef.current.length||goalListRef.current.length||waypointsRef.current.length||Object.keys(startPosesRef.current||{}).length;
     if(!hasSemantic)return;
     slamReprojectingRef.current=true;
     setMaps(p=>p.map(item=>reprojectShapeItem(item,fromMeta,fromSize,toMeta,toSize)));
@@ -3326,11 +3354,17 @@ export default function Nav2MapEditor() {
           return{id,label:wp.label||id,x:p.x,y:p.y,theta:thetaFromSemanticPose(wp)};
         })
         .filter(Boolean);
-      const goalListIds=new Set([
+      const goalListRaw=[
         ...(Array.isArray(data.goal_list)?data.goal_list:[]),
         ...(Array.isArray(data.selected_goals)?data.selected_goals:[]),
         ...(Array.isArray(data.required_goals)?data.required_goals:[]),
-      ].map(String));
+      ];
+      const goalIdFromListItem=(item)=>{
+        if(typeof item==="string"||typeof item==="number")return String(item);
+        if(!item||typeof item!=="object")return "";
+        return String(item.goal_id??item.goalId??item.goal??item.target_goal??item.targetGoal??"");
+      };
+      const goalListIds=new Set(goalListRaw.map(goalIdFromListItem).filter(Boolean));
       const nextGoals=(Array.isArray(data.goals)?data.goals:[])
         .map((g,i)=>{
           const p=getPosePoint(g);
@@ -3339,11 +3373,29 @@ export default function Nav2MapEditor() {
           return{id,label:g.label||id,x:p.x,y:p.y,theta:thetaFromSemanticPose(g),room_id:g.room_id||g.roomId||null,target_id:g.target_id||g.targetId||null,required:Boolean(g.required??g.in_list??g.selected??goalListIds.has(id))};
         })
         .filter(Boolean);
+      const goalById=new Map(nextGoals.map(g=>[g.id,g]));
+      const importedGoalList=goalListRaw.map((item,i)=>{
+        if(typeof item==="string"||typeof item==="number"){
+          const goalId=String(item);
+          return{id:`gl${i+1}`,label:goalById.get(goalId)?.label||goalId,goal_id:goalId};
+        }
+        if(!item||typeof item!=="object")return null;
+        let goalId=goalIdFromListItem(item);
+        if(!goalId&&goalById.has(String(item.id||"")))goalId=String(item.id);
+        const listId=String(item.list_id??item.listId??(/^gl\d+$/i.test(String(item.id||""))?item.id:`gl${i+1}`));
+        const label=String(item.label??item.name??goalById.get(goalId)?.label??(goalId||listId));
+        return{id:listId,label,goal_id:goalId};
+      }).filter(Boolean);
+      const listedIds=new Set(importedGoalList.map(item=>item.goal_id).filter(Boolean));
+      const requiredGoalList=nextGoals
+        .filter(g=>g.required&&!listedIds.has(g.id))
+        .map((g,i)=>({id:`gl${importedGoalList.length+i+1}`,label:g.label||g.id,goal_id:g.id}));
+      const nextGoalList=[...importedGoalList,...requiredGoalList];
 
-      const next={maps:nextMaps,rooms:nextRooms,carriers:nextCarriers,objects:nextObjects,waypoints:nextWaypoints,goals:nextGoals};
+      const next={maps:nextMaps,rooms:nextRooms,carriers:nextCarriers,objects:nextObjects,waypoints:nextWaypoints,goals:nextGoals,goalList:nextGoalList};
       syncSemanticCounters(next);
       setMaps(nextMaps);setRooms(nextRooms);setCarriers(nextCarriers);setObjects(nextObjects);
-      setStartPoses(nextStartPoses);setSelectedStartTask(nextSelectedStartTask);setWaypoints(nextWaypoints);setGoals(nextGoals);
+      setStartPoses(nextStartPoses);setSelectedStartTask(nextSelectedStartTask);setWaypoints(nextWaypoints);setGoals(nextGoals);setGoalList(nextGoalList);
       setSelSemId(null);setSelWpIdx(null);setPolyVerts([]);setPolySnap(false);
       setActiveTab("semantic");setTool("semSelect");setShowSemPanel(true);
       const metaPatch={};
@@ -3351,7 +3403,7 @@ export default function Nav2MapEditor() {
       if(Array.isArray(semMeta.origin)&&semMeta.origin.length>=2)metaPatch.origin=sourceOrigin;
       const semanticBase=jsonName.replace(/_semantic\.json$/i,"").replace(/\.json$/i,"");
       setMeta(m=>({...m,...metaPatch,filename:(m.filename==="map"&&semanticBase)?semanticBase:m.filename}));
-      const count=nextMaps.length+nextRooms.length+nextCarriers.length+nextObjects.length+nextWaypoints.length+nextGoals.length+Object.keys(nextStartPoses).length;
+      const count=nextMaps.length+nextRooms.length+nextCarriers.length+nextObjects.length+nextWaypoints.length+nextGoals.length+nextGoalList.length+Object.keys(nextStartPoses).length;
       setTimeout(()=>{saveSnap();drawOverlayRef.current?.();},0);
       setStatus(`✅ 시맨틱 로드: ${jsonName} (${count}개 항목)`);
       return true;
@@ -3511,6 +3563,7 @@ export default function Nav2MapEditor() {
 
   const handleNativeOpen=async ()=>{
     const filePath = await pickHostPath({
+      defaultPath: DEFAULT_MAP_SEARCH_DIR,
       filters: [
         { name: "Map / Semantic files", extensions: ["pgm", "yaml", "yml", "json"] },
         { name: "All files", extensions: ["*"] },
@@ -3828,11 +3881,15 @@ export default function Nav2MapEditor() {
     const startPoseItems=START_TASKS
       .filter(task=>startPoses[task])
       .map(task=>({...poseJson(startPoses[task]),task,label:task}));
-    const goalList=goals.filter(g=>g.required).map(g=>g.id);
+    const goalListGoalIds=new Set(goalList.map(item=>item.goal_id).filter(Boolean));
     return JSON.stringify({
       metadata:{resolution:meta.resolution,origin:meta.origin,image_size:{w:canvasSize.w,h:canvasSize.h},created:new Date().toISOString()},
       start_poses:startPoseItems,
-      goal_list:goalList,
+      goal_list:goalList.map((item,i)=>({
+        id:item.id||`gl${i+1}`,
+        label:item.label||item.goal_id||`goal_list_${i+1}`,
+        goal_id:item.goal_id||"",
+      })),
       maps:maps.map(m=>{
         const poly=shapeToPoly(m)||[];
         const bb=poly.length?polyBBox(poly):{x:m.x,y:m.y,x2:m.x+(m.w||0),y2:m.y+(m.h||0)};
@@ -3877,14 +3934,14 @@ export default function Nav2MapEditor() {
       goals:goals.map(g=>{
         const pos=tw(g.x,g.y);
         const qz=Math.sin(g.theta/2),qw=Math.cos(g.theta/2);
-        return{id:g.id,label:g.label,room_id:g.room_id,target_id:g.target_id,required:!!g.required,
+        return{id:g.id,label:g.label,room_id:g.room_id,target_id:g.target_id,required:goalListGoalIds.has(g.id)||!!g.required,
           position:{x:+pos.x,y:+pos.y,z:0.0},
           orientation:{x:0,y:0,z:+qz.toFixed(5),w:+qw.toFixed(5)},
           theta_rad:+g.theta.toFixed(4),
           _pixel:{x:g.x,y:g.y}};
       })
     },null,2);
-  },[maps,rooms,carriers,objects,startPoses,waypoints,goals,meta,canvasSize,toWorld]);
+  },[maps,rooms,carriers,objects,startPoses,waypoints,goals,goalList,meta,canvasSize,toWorld]);
 
   const saveMapBundle=useCallback(async(defaultBase=meta.filename)=>{
     const c=canvasRef.current;if(!c)return null;
@@ -4056,7 +4113,7 @@ export default function Nav2MapEditor() {
   const effectiveWorkspaceRoot = (workspaceSync.workspaceRoot || DEFAULT_WORKSPACE_ROOT).trim();
   const canSyncWorkspace = workspaceAvailable && !!effectiveWorkspaceRoot && !workspaceBusy;
   const startPoseCount=Object.values(startPoses||{}).filter(Boolean).length;
-  const semanticItemCount=maps.length+rooms.length+carriers.length+objects.length+goals.length+waypoints.length+startPoseCount;
+  const semanticItemCount=maps.length+rooms.length+carriers.length+objects.length+goals.length+goalList.length+waypoints.length+startPoseCount;
 
   return(
     <div style={{display:"flex",flexDirection:"column",height:"100vh",background:"#050d1a",color:"#8eb8c8",fontFamily:"'JetBrains Mono','Fira Code',monospace",fontSize:12,overflow:"hidden"}}>
@@ -4455,7 +4512,7 @@ export default function Nav2MapEditor() {
         {/* ── SEMANTIC PANEL (rooms + carriers + objects + waypoints) ── */}
         {showSemPanel&&(
           <SemanticPanel
-            maps={maps} rooms={rooms} carriers={carriers} objects={objects} waypoints={waypoints} goals={goals}
+            maps={maps} rooms={rooms} carriers={carriers} objects={objects} waypoints={waypoints} goals={goals} goalList={goalList}
             startPoses={startPoses} startTasks={START_TASKS} setSelectedStartTask={setSelectedStartTask}
             selId={selSemId} setSelId={setSelSemId}
             selWpIdx={selWpIdx} setSelWpIdx={setSelWpIdx}
@@ -4466,6 +4523,9 @@ export default function Nav2MapEditor() {
             onDeleteWp={i=>{setWaypoints(p=>p.filter((_,j)=>j!==i));if(selWpIdx===i)setSelWpIdx(null);}}
             onDeleteGoal={id=>{setGoals(p=>p.filter(g=>g.id!==id));if(selSemId===id)setSelSemId(null);}}
             onDeleteStart={task=>{setStartPoseForTask(task||selectedStartTask,null);if(startTaskFromId(startPoses,selSemId))setSelSemId(null);}}
+            onAddGoalList={()=>setGoalList(p=>[...p,{id:gluid(),label:`goal_list_${p.length+1}`,goal_id:""}])}
+            onUpdateGoalList={(id,patch)=>setGoalList(p=>p.map(item=>item.id===id?{...item,...patch}:item))}
+            onDeleteGoalList={id=>setGoalList(p=>p.filter(item=>item.id!==id))}
             onReassign={(layer,id,field,value)=>{
               if(layer==="room") setRooms(p=>p.map(r=>r.id===id?{...r,[field]:value}:r));
               else if(layer==="carrier") setCarriers(p=>p.map(c=>c.id===id?{...c,[field]:value}:c));
@@ -4480,6 +4540,7 @@ export default function Nav2MapEditor() {
                 return false;
               }
               setGoals(p=>p.map(g=>g.id===oldId?{...g,id:nextId}:g));
+              setGoalList(p=>p.map(item=>item.goal_id===oldId?{...item,goal_id:nextId}:item));
               if(selSemId===oldId)setSelSemId(nextId);
               setStatus(`🎯 골 ID 변경: ${oldId} → ${nextId}`);
               return true;
