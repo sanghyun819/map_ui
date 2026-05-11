@@ -578,7 +578,7 @@ function syncSemanticCounters(next){
   _oIdx=maxIdNumber("o",next.objects);
   _wIdx=maxIdNumber("w",next.waypoints);
   _gIdx=maxIdNumber("g",next.goals);
-  _glIdx=maxIdNumber("gl",next.goalList);
+  if(Object.prototype.hasOwnProperty.call(next,"goalList"))_glIdx=maxIdNumber("gl",next.goalList);
 }
 
 let _mIdx=0,_rIdx=0,_cIdx=0,_oIdx=0,_wIdx=0,_gIdx=0,_glIdx=0;
@@ -1252,7 +1252,7 @@ function CommitInput({value,onCommit,style,...props}) {
 }
 
 // ─── Semantic panel (4-level hierarchy: map > room > carrier > object) ───────
-function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,goalList,startPoses,startTasks,setSelectedStartTask,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameGoalId,onRenameStartPoseId,onAddGoalList,onUpdateGoalList,onDeleteGoalList,setWaypoints,onImportJSON,onImportFile,onExportJSON,toWorld,resolution,typeOptions}) {
+function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,goalList,startPoses,startTasks,setSelectedStartTask,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameGoalId,onRenameStartPoseId,onAddGoalList,onUpdateGoalList,onDeleteGoalList,onImportGoalList,onImportGoalListFile,onExportGoalList,setWaypoints,onImportJSON,onImportFile,onExportJSON,toWorld,resolution,typeOptions}) {
   const res=resolution||0.05;
   const [expanded,setExpanded]=useState({});
   const toggle=(id)=>setExpanded(p=>({...p,[id]:!p[id]}));
@@ -1556,7 +1556,15 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,goalList,sta
       <div style={{borderTop:"1px solid rgba(0,230,118,0.16)",marginTop:4}}>
         <div style={{padding:"6px 10px 4px",fontSize:10,color:"#00e676",letterSpacing:1,fontWeight:"bold",display:"flex",alignItems:"center",gap:6}}>
           <span>☑ GOAL LIST ({goalList.length})</span>
-          <button onClick={onAddGoalList} style={{...btn(),marginLeft:"auto",padding:"1px 6px",fontSize:10,color:"#00e676",borderColor:"rgba(0,230,118,0.28)"}}>＋</button>
+          {onImportGoalList&&<button onClick={onImportGoalList} style={{...btn(),marginLeft:"auto",padding:"1px 6px",fontSize:10,color:"#00e676",borderColor:"rgba(0,230,118,0.22)"}}>열기</button>}
+          {!onImportGoalList&&onImportGoalListFile&&(
+            <label style={{...btn(),marginLeft:"auto",padding:"1px 6px",fontSize:10,color:"#00e676",borderColor:"rgba(0,230,118,0.22)",cursor:"pointer"}}>
+              열기
+              <input type="file" accept=".json" onChange={onImportGoalListFile} style={{display:"none"}}/>
+            </label>
+          )}
+          <button onClick={onExportGoalList} style={{...btn(),padding:"1px 6px",fontSize:10,color:"#00e676",borderColor:"rgba(0,230,118,0.22)"}}>저장</button>
+          <button onClick={onAddGoalList} style={{...btn(),padding:"1px 6px",fontSize:10,color:"#00e676",borderColor:"rgba(0,230,118,0.28)"}}>＋</button>
         </div>
         <datalist id="semantic-goal-id-options">
           {goals.map(g=><option key={g.id} value={g.id}>{g.label||g.id}</option>)}
@@ -3354,48 +3362,19 @@ export default function Nav2MapEditor() {
           return{id,label:wp.label||id,x:p.x,y:p.y,theta:thetaFromSemanticPose(wp)};
         })
         .filter(Boolean);
-      const goalListRaw=[
-        ...(Array.isArray(data.goal_list)?data.goal_list:[]),
-        ...(Array.isArray(data.selected_goals)?data.selected_goals:[]),
-        ...(Array.isArray(data.required_goals)?data.required_goals:[]),
-      ];
-      const goalIdFromListItem=(item)=>{
-        if(typeof item==="string"||typeof item==="number")return String(item);
-        if(!item||typeof item!=="object")return "";
-        return String(item.goal_id??item.goalId??item.goal??item.target_goal??item.targetGoal??"");
-      };
-      const goalListIds=new Set(goalListRaw.map(goalIdFromListItem).filter(Boolean));
       const nextGoals=(Array.isArray(data.goals)?data.goals:[])
         .map((g,i)=>{
           const p=getPosePoint(g);
           if(!p)return null;
           const id=String(g.id||`g${i+1}`);
-          return{id,label:g.label||id,x:p.x,y:p.y,theta:thetaFromSemanticPose(g),room_id:g.room_id||g.roomId||null,target_id:g.target_id||g.targetId||null,required:Boolean(g.required??g.in_list??g.selected??goalListIds.has(id))};
+          return{id,label:g.label||id,x:p.x,y:p.y,theta:thetaFromSemanticPose(g),room_id:g.room_id||g.roomId||null,target_id:g.target_id||g.targetId||null};
         })
         .filter(Boolean);
-      const goalById=new Map(nextGoals.map(g=>[g.id,g]));
-      const importedGoalList=goalListRaw.map((item,i)=>{
-        if(typeof item==="string"||typeof item==="number"){
-          const goalId=String(item);
-          return{id:`gl${i+1}`,label:goalById.get(goalId)?.label||goalId,goal_id:goalId};
-        }
-        if(!item||typeof item!=="object")return null;
-        let goalId=goalIdFromListItem(item);
-        if(!goalId&&goalById.has(String(item.id||"")))goalId=String(item.id);
-        const listId=String(item.list_id??item.listId??(/^gl\d+$/i.test(String(item.id||""))?item.id:`gl${i+1}`));
-        const label=String(item.label??item.name??goalById.get(goalId)?.label??(goalId||listId));
-        return{id:listId,label,goal_id:goalId};
-      }).filter(Boolean);
-      const listedIds=new Set(importedGoalList.map(item=>item.goal_id).filter(Boolean));
-      const requiredGoalList=nextGoals
-        .filter(g=>g.required&&!listedIds.has(g.id))
-        .map((g,i)=>({id:`gl${importedGoalList.length+i+1}`,label:g.label||g.id,goal_id:g.id}));
-      const nextGoalList=[...importedGoalList,...requiredGoalList];
 
-      const next={maps:nextMaps,rooms:nextRooms,carriers:nextCarriers,objects:nextObjects,waypoints:nextWaypoints,goals:nextGoals,goalList:nextGoalList};
+      const next={maps:nextMaps,rooms:nextRooms,carriers:nextCarriers,objects:nextObjects,waypoints:nextWaypoints,goals:nextGoals};
       syncSemanticCounters(next);
       setMaps(nextMaps);setRooms(nextRooms);setCarriers(nextCarriers);setObjects(nextObjects);
-      setStartPoses(nextStartPoses);setSelectedStartTask(nextSelectedStartTask);setWaypoints(nextWaypoints);setGoals(nextGoals);setGoalList(nextGoalList);
+      setStartPoses(nextStartPoses);setSelectedStartTask(nextSelectedStartTask);setWaypoints(nextWaypoints);setGoals(nextGoals);
       setSelSemId(null);setSelWpIdx(null);setPolyVerts([]);setPolySnap(false);
       setActiveTab("semantic");setTool("semSelect");setShowSemPanel(true);
       const metaPatch={};
@@ -3403,7 +3382,7 @@ export default function Nav2MapEditor() {
       if(Array.isArray(semMeta.origin)&&semMeta.origin.length>=2)metaPatch.origin=sourceOrigin;
       const semanticBase=jsonName.replace(/_semantic\.json$/i,"").replace(/\.json$/i,"");
       setMeta(m=>({...m,...metaPatch,filename:(m.filename==="map"&&semanticBase)?semanticBase:m.filename}));
-      const count=nextMaps.length+nextRooms.length+nextCarriers.length+nextObjects.length+nextWaypoints.length+nextGoals.length+nextGoalList.length+Object.keys(nextStartPoses).length;
+      const count=nextMaps.length+nextRooms.length+nextCarriers.length+nextObjects.length+nextWaypoints.length+nextGoals.length+Object.keys(nextStartPoses).length;
       setTimeout(()=>{saveSnap();drawOverlayRef.current?.();},0);
       setStatus(`✅ 시맨틱 로드: ${jsonName} (${count}개 항목)`);
       return true;
@@ -3443,6 +3422,63 @@ export default function Nav2MapEditor() {
     e.target.value="";
     if(!file)return;
     await loadSemanticJSONData(await file.text(),file.name);
+  };
+
+  const normalizeGoalListItems=useCallback((rawItems)=>{
+    const goalById=new Map(goalsRef.current.map(g=>[g.id,g]));
+    return (rawItems||[]).map((item,i)=>{
+      if(typeof item==="string"||typeof item==="number"){
+        const goalId=String(item);
+        return {id:`gl${i+1}`,label:goalById.get(goalId)?.label||goalId,goal_id:goalId};
+      }
+      if(!item||typeof item!=="object")return null;
+      const rawId=String(item.id||"");
+      const goalId=String(item.goal_id??item.goalId??item.goal??item.target_goal??item.targetGoal??(!/^gl\d+$/i.test(rawId)?rawId:""));
+      const listId=String(item.list_id??item.listId??(/^gl\d+$/i.test(rawId)?rawId:`gl${i+1}`));
+      const label=String(item.label??item.name??goalById.get(goalId)?.label??(goalId||listId));
+      return {id:listId,label,goal_id:goalId};
+    }).filter(Boolean);
+  },[]);
+
+  const loadGoalListJSONData=useCallback((text,jsonName="goal_list.json")=>{
+    try{
+      const data=typeof text==="string"?JSON.parse(text):text;
+      const rawItems=Array.isArray(data)?data
+        :Array.isArray(data?.goal_list)?data.goal_list
+          :Array.isArray(data?.goals)?data.goals
+            :[];
+      const nextGoalList=normalizeGoalListItems(rawItems);
+      setGoalList(nextGoalList);
+      _glIdx=maxIdNumber("gl",nextGoalList);
+      setShowSemPanel(true);
+      setTimeout(saveSnap,0);
+      setStatus(`✅ 골 리스트 로드: ${jsonName} (${nextGoalList.length}개)`);
+      return true;
+    }catch(err){
+      setStatus(`⚠ 골 리스트 JSON 오류: ${err.message}`);
+      return false;
+    }
+  },[normalizeGoalListItems,saveSnap]);
+
+  const handleGoalListOpen=useCallback(async()=>{
+    if(!hostAPI?.openFileDialog){setStatus("⚠ 골 리스트 열기는 Electron 또는 robot backend에서만 가능합니다");return;}
+    const base=cleanMapBaseName(meta.filename||"map")||"map";
+    const filePath=await pickHostPath({
+      defaultPath:`${DEFAULT_MAP_SEARCH_DIR}/${base}_goal_list.json`,
+      filters:[{name:"Goal list JSON",extensions:["json"]},{name:"All files",extensions:["*"]}],
+      properties:["openFile"],
+    });
+    if(!filePath)return;
+    const name=filePath.split("/").pop();
+    const text=await hostAPI.readFile(filePath,"utf-8");
+    loadGoalListJSONData(text,name);
+  },[loadGoalListJSONData,meta.filename,pickHostPath]);
+
+  const handleGoalListFile=async(e)=>{
+    const file=e.target.files?.[0];
+    e.target.value="";
+    if(!file)return;
+    await loadGoalListJSONData(await file.text(),file.name);
   };
 
   const importCatalogTexts=useCallback((items)=>{
@@ -3865,6 +3901,25 @@ export default function Nav2MapEditor() {
 
   const seekBag=useCallback((delta)=>seekBagTo(bagOffset+delta),[bagOffset,seekBagTo]);
 
+  const buildGoalListJSON=useCallback(()=>{
+    return JSON.stringify({
+      metadata:{map:meta.filename,created:new Date().toISOString()},
+      goal_list:goalList.map((item,i)=>({
+        id:item.id||`gl${i+1}`,
+        label:item.label||item.goal_id||`goal_list_${i+1}`,
+        goal_id:item.goal_id||"",
+      })),
+    },null,2);
+  },[goalList,meta.filename]);
+
+  const saveGoalListJSON=useCallback(async()=>{
+    const base=cleanMapBaseName(meta.filename||"map")||"map";
+    const defaultName=hasHostAPI?`${DEFAULT_MAP_SEARCH_DIR}/${base}_goal_list.json`:`${base}_goal_list.json`;
+    const saved=await nativeSave(defaultName,[{name:"Goal list JSON",extensions:["json"]}],buildGoalListJSON(),"utf-8",pickHostPath);
+    if(saved)setStatus(`💾 골 리스트 저장 완료: ${basenameFromPath(saved)}`);
+    return saved;
+  },[buildGoalListJSON,meta.filename,pickHostPath]);
+
   const buildSemanticJSON=useCallback(()=>{
     const tw=toWorld;
     const polyWorld=(poly)=>poly.map(p=>tw(p.x,p.y));
@@ -3881,15 +3936,9 @@ export default function Nav2MapEditor() {
     const startPoseItems=START_TASKS
       .filter(task=>startPoses[task])
       .map(task=>({...poseJson(startPoses[task]),task,label:task}));
-    const goalListGoalIds=new Set(goalList.map(item=>item.goal_id).filter(Boolean));
     return JSON.stringify({
       metadata:{resolution:meta.resolution,origin:meta.origin,image_size:{w:canvasSize.w,h:canvasSize.h},created:new Date().toISOString()},
       start_poses:startPoseItems,
-      goal_list:goalList.map((item,i)=>({
-        id:item.id||`gl${i+1}`,
-        label:item.label||item.goal_id||`goal_list_${i+1}`,
-        goal_id:item.goal_id||"",
-      })),
       maps:maps.map(m=>{
         const poly=shapeToPoly(m)||[];
         const bb=poly.length?polyBBox(poly):{x:m.x,y:m.y,x2:m.x+(m.w||0),y2:m.y+(m.h||0)};
@@ -3934,14 +3983,14 @@ export default function Nav2MapEditor() {
       goals:goals.map(g=>{
         const pos=tw(g.x,g.y);
         const qz=Math.sin(g.theta/2),qw=Math.cos(g.theta/2);
-        return{id:g.id,label:g.label,room_id:g.room_id,target_id:g.target_id,required:goalListGoalIds.has(g.id)||!!g.required,
+        return{id:g.id,label:g.label,room_id:g.room_id,target_id:g.target_id,
           position:{x:+pos.x,y:+pos.y,z:0.0},
           orientation:{x:0,y:0,z:+qz.toFixed(5),w:+qw.toFixed(5)},
           theta_rad:+g.theta.toFixed(4),
           _pixel:{x:g.x,y:g.y}};
       })
     },null,2);
-  },[maps,rooms,carriers,objects,startPoses,waypoints,goals,goalList,meta,canvasSize,toWorld]);
+  },[maps,rooms,carriers,objects,startPoses,waypoints,goals,meta,canvasSize,toWorld]);
 
   const saveMapBundle=useCallback(async(defaultBase=meta.filename)=>{
     const c=canvasRef.current;if(!c)return null;
@@ -4526,6 +4575,9 @@ export default function Nav2MapEditor() {
             onAddGoalList={()=>setGoalList(p=>[...p,{id:gluid(),label:`goal_list_${p.length+1}`,goal_id:""}])}
             onUpdateGoalList={(id,patch)=>setGoalList(p=>p.map(item=>item.id===id?{...item,...patch}:item))}
             onDeleteGoalList={id=>setGoalList(p=>p.filter(item=>item.id!==id))}
+            onImportGoalList={hasHostAPI?handleGoalListOpen:null}
+            onImportGoalListFile={!hasHostAPI?handleGoalListFile:null}
+            onExportGoalList={saveGoalListJSON}
             onReassign={(layer,id,field,value)=>{
               if(layer==="room") setRooms(p=>p.map(r=>r.id===id?{...r,[field]:value}:r));
               else if(layer==="carrier") setCarriers(p=>p.map(c=>c.id===id?{...c,[field]:value}:c));
