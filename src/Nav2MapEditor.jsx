@@ -1259,6 +1259,22 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,goalList,sta
   const startPoseCount=Object.values(startPoses||{}).filter(Boolean).length;
   const startPoseEntries=startTasks.map(task=>({task,pose:startPoses?.[task]})).filter(x=>x.pose);
   const goalListCount=goalList.length;
+  const GOAL_LIST_COLOR="#b388ff";
+  const GOAL_LIST_RGB="179,136,255";
+  const [sectionOpen,setSectionOpen]=useState(()=>({
+    start:startPoseCount<=2,
+    goalList:true,
+    goals:goals.length<=3,
+    waypoints:waypoints.length<=3,
+  }));
+  const toggleSection=(key)=>setSectionOpen(p=>({...p,[key]:!p[key]}));
+  const sectionHeader=(key,label,count,color,actions=null)=>(
+    <div onClick={()=>toggleSection(key)} style={{padding:"6px 10px 4px",fontSize:10,color,letterSpacing:1,fontWeight:"bold",display:"flex",alignItems:"center",gap:6,cursor:"pointer",userSelect:"none"}}>
+      <span style={{fontSize:9,opacity:.55,width:10}}>{sectionOpen[key]?"▼":"▶"}</span>
+      <span style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label} ({count})</span>
+      {actions&&<div onClick={e=>e.stopPropagation()} style={{display:"flex",alignItems:"center",gap:4,marginLeft:"auto"}}>{actions}</div>}
+    </div>
+  );
 
   const insidePoly=(poly,obj)=>{
     if(!poly)return false;
@@ -1521,176 +1537,197 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,goalList,sta
       {/* ── Start pose section ── */}
       {startPoseCount>0&&(
         <div style={{borderTop:"1px solid rgba(0,230,118,0.16)",marginTop:4}}>
-          <div style={{padding:"6px 10px 4px",fontSize:10,color:"#00e676",letterSpacing:1,fontWeight:"bold"}}>⌂ NAV2 START</div>
-          {startPoseEntries.map(({task,pose})=>{
-            const isSel=selId===pose.id;
-            return(
-              <div key={task} onClick={()=>{setSelectedStartTask(task);setSelId(isSel?null:pose.id);}} style={{
-                margin:"0 8px 4px",padding:"5px 8px",borderRadius:5,cursor:"pointer",
-                background:isSel?"rgba(0,230,118,0.1)":"rgba(255,255,255,0.02)",
-                border:isSel?"1px solid rgba(0,230,118,0.45)":"1px solid rgba(0,230,118,0.12)",
-              }}>
-                <div style={{display:"flex",alignItems:"center",gap:5}}>
-                  <span style={{fontSize:12,color:"#00e676"}}>⌂</span>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{color:"#00e676",fontWeight:"bold",fontSize:11}}>{pose.id}: {task}</div>
-                    <div style={{color:"rgba(0,230,118,0.48)",fontSize:9}}>
-                      {(()=>{const w=toWorld(pose.x,pose.y);return `(${w.x}, ${w.y})m`;})()} · {Math.round(pose.theta*180/Math.PI)}°
+          {sectionHeader("start","⌂ NAV2 START",startPoseCount,"#00e676")}
+          {sectionOpen.start&&(
+            <div style={{maxHeight:160,overflow:"auto",paddingBottom:1}}>
+              {startPoseEntries.map(({task,pose})=>{
+                const isSel=selId===pose.id;
+                return(
+                  <div key={task} onClick={()=>{setSelectedStartTask(task);setSelId(isSel?null:pose.id);}} style={{
+                    margin:"0 8px 4px",padding:"5px 8px",borderRadius:5,cursor:"pointer",
+                    background:isSel?"rgba(0,230,118,0.1)":"rgba(255,255,255,0.02)",
+                    border:isSel?"1px solid rgba(0,230,118,0.45)":"1px solid rgba(0,230,118,0.12)",
+                  }}>
+                    <div style={{display:"flex",alignItems:"center",gap:5}}>
+                      <span style={{fontSize:12,color:"#00e676"}}>⌂</span>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{color:"#00e676",fontWeight:"bold",fontSize:11}}>{pose.id}: {task}</div>
+                        <div style={{color:"rgba(0,230,118,0.48)",fontSize:9}}>
+                          {(()=>{const w=toWorld(pose.x,pose.y);return `(${w.x}, ${w.y})m`;})()} · {Math.round(pose.theta*180/Math.PI)}°
+                        </div>
+                      </div>
+                      <button onClick={ev=>{ev.stopPropagation();onDeleteStart(task);}} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
                     </div>
+                    {isSel&&(
+                      <div style={{marginTop:5,display:"flex",alignItems:"center",gap:4}} onClick={e=>e.stopPropagation()}>
+                        <span style={{fontSize:9,color:"rgba(0,230,118,0.5)",whiteSpace:"nowrap"}}>ID</span>
+                        <CommitInput value={pose.id||""} onCommit={next=>onRenameStartPoseId?.(task,next)}
+                          style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}/>
+                      </div>
+                    )}
                   </div>
-                  <button onClick={ev=>{ev.stopPropagation();onDeleteStart(task);}} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
-                </div>
-                {isSel&&(
-                  <div style={{marginTop:5,display:"flex",alignItems:"center",gap:4}} onClick={e=>e.stopPropagation()}>
-                    <span style={{fontSize:9,color:"rgba(0,230,118,0.5)",whiteSpace:"nowrap"}}>ID</span>
-                    <CommitInput value={pose.id||""} onCommit={next=>onRenameStartPoseId?.(task,next)}
-                      style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}/>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
       {/* ── Goal list section ── */}
-      <div style={{borderTop:"1px solid rgba(0,230,118,0.16)",marginTop:4}}>
-        <div style={{padding:"6px 10px 4px",fontSize:10,color:"#00e676",letterSpacing:1,fontWeight:"bold",display:"flex",alignItems:"center",gap:6}}>
-          <span>☑ GOAL LIST ({goalList.length})</span>
-          {onImportGoalList&&<button onClick={onImportGoalList} style={{...btn(),marginLeft:"auto",padding:"1px 6px",fontSize:10,color:"#00e676",borderColor:"rgba(0,230,118,0.22)"}}>열기</button>}
-          {!onImportGoalList&&onImportGoalListFile&&(
-            <label style={{...btn(),marginLeft:"auto",padding:"1px 6px",fontSize:10,color:"#00e676",borderColor:"rgba(0,230,118,0.22)",cursor:"pointer"}}>
-              열기
-              <input type="file" accept=".json" onChange={onImportGoalListFile} style={{display:"none"}}/>
-            </label>
-          )}
-          <button onClick={onExportGoalList} style={{...btn(),padding:"1px 6px",fontSize:10,color:"#00e676",borderColor:"rgba(0,230,118,0.22)"}}>저장</button>
-          <button onClick={onAddGoalList} style={{...btn(),padding:"1px 6px",fontSize:10,color:"#00e676",borderColor:"rgba(0,230,118,0.28)"}}>＋</button>
-        </div>
-        <datalist id="semantic-goal-id-options">
-          {goals.map(g=><option key={g.id} value={g.id}>{g.label||g.id}</option>)}
-        </datalist>
-        {goalList.length===0?(
-          <div style={{margin:"0 8px 6px",padding:"6px 8px",borderRadius:5,color:"rgba(0,230,118,0.42)",fontSize:10,lineHeight:1.5,border:"1px solid rgba(0,230,118,0.08)"}}>
-            + 버튼으로 라벨과 goal_id를 먼저 만들어 저장할 수 있습니다.
-          </div>
-        ):goalList.map((item,i)=>{
-          const linkedGoal=goals.find(g=>g.id===item.goal_id);
-          return(
-            <div key={item.id||i} style={{margin:"0 8px 5px",padding:"6px 8px",borderRadius:5,background:"rgba(0,230,118,0.05)",border:"1px solid rgba(0,230,118,0.13)"}}>
-              <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:5}}>
-                <span style={{color:"#00e676",fontSize:10,fontWeight:"bold"}}>{i+1}</span>
-                <span style={{color:"rgba(0,230,118,0.42)",fontSize:9,flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.id}</span>
-                <button onClick={()=>onDeleteGoalList(item.id)} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
+      <div style={{borderTop:`1px solid rgba(${GOAL_LIST_RGB},0.18)`,marginTop:4}}>
+        {sectionHeader("goalList","☑ GOAL LIST",goalList.length,GOAL_LIST_COLOR,
+          <>
+            {onImportGoalList&&<button onClick={onImportGoalList} style={{...btn(),padding:"1px 6px",fontSize:10,color:GOAL_LIST_COLOR,borderColor:`rgba(${GOAL_LIST_RGB},0.28)`}}>열기</button>}
+            {!onImportGoalList&&onImportGoalListFile&&(
+              <label style={{...btn(),padding:"1px 6px",fontSize:10,color:GOAL_LIST_COLOR,borderColor:`rgba(${GOAL_LIST_RGB},0.28)`,cursor:"pointer"}}>
+                열기
+                <input type="file" accept=".json" onChange={onImportGoalListFile} style={{display:"none"}}/>
+              </label>
+            )}
+            <button onClick={onExportGoalList} style={{...btn(),padding:"1px 6px",fontSize:10,color:GOAL_LIST_COLOR,borderColor:`rgba(${GOAL_LIST_RGB},0.28)`}}>저장</button>
+            <button onClick={onAddGoalList} style={{...btn(),padding:"1px 6px",fontSize:10,color:GOAL_LIST_COLOR,borderColor:`rgba(${GOAL_LIST_RGB},0.34)`}}>＋</button>
+          </>
+        )}
+        {sectionOpen.goalList&&(
+          <>
+            <datalist id="semantic-goal-id-options">
+              {goals.map(g=><option key={g.id} value={g.id}>{g.label||g.id}</option>)}
+            </datalist>
+            {goalList.length===0?(
+              <div style={{margin:"0 8px 6px",padding:"6px 8px",borderRadius:5,color:`rgba(${GOAL_LIST_RGB},0.55)`,fontSize:10,lineHeight:1.5,border:`1px solid rgba(${GOAL_LIST_RGB},0.12)`}}>
+                + 버튼으로 라벨과 goal_id를 먼저 만들어 저장할 수 있습니다.
               </div>
-              <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                <input value={item.label||""} onChange={e=>onUpdateGoalList(item.id,{label:e.target.value})}
-                  placeholder="라벨" style={{...INPUT,width:"100%",boxSizing:"border-box",padding:"3px 5px",fontSize:10}}/>
-                <input value={item.goal_id||""} onChange={e=>onUpdateGoalList(item.id,{goal_id:e.target.value.trim()})}
-                  list="semantic-goal-id-options" placeholder="goal_id" style={{...INPUT,width:"100%",boxSizing:"border-box",padding:"3px 5px",fontSize:10}}/>
+            ):(
+              <div style={{maxHeight:220,overflow:"auto",paddingBottom:1}}>
+                {goalList.map((item,i)=>{
+                  const linkedGoal=goals.find(g=>g.id===item.goal_id);
+                  return(
+                    <div key={item.id||i} style={{margin:"0 8px 5px",padding:"6px 8px",borderRadius:5,background:`rgba(${GOAL_LIST_RGB},0.07)`,border:`1px solid rgba(${GOAL_LIST_RGB},0.18)`}}>
+                      <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:5}}>
+                        <span style={{color:GOAL_LIST_COLOR,fontSize:10,fontWeight:"bold"}}>{i+1}</span>
+                        <span style={{color:`rgba(${GOAL_LIST_RGB},0.58)`,fontSize:9,flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.id}</span>
+                        <button onClick={()=>onDeleteGoalList(item.id)} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
+                      </div>
+                      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                        <input value={item.label||""} onChange={e=>onUpdateGoalList(item.id,{label:e.target.value})}
+                          placeholder="라벨" style={{...INPUT,width:"100%",boxSizing:"border-box",padding:"3px 5px",fontSize:10}}/>
+                        <input value={item.goal_id||""} onChange={e=>onUpdateGoalList(item.id,{goal_id:e.target.value.trim()})}
+                          list="semantic-goal-id-options" placeholder="goal_id" style={{...INPUT,width:"100%",boxSizing:"border-box",padding:"3px 5px",fontSize:10}}/>
+                      </div>
+                      <div style={{marginTop:4,color:linkedGoal?`rgba(${GOAL_LIST_RGB},0.62)`:"rgba(0,212,255,0.3)",fontSize:8,lineHeight:1.4}}>
+                        {linkedGoal?`${linkedGoal.label||linkedGoal.id}에 연결됨`:"pose 없이 저장 가능 · 나중에 같은 goal_id와 매칭"}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-              <div style={{marginTop:4,color:linkedGoal?"rgba(0,230,118,0.48)":"rgba(0,212,255,0.3)",fontSize:8,lineHeight:1.4}}>
-                {linkedGoal?`${linkedGoal.label||linkedGoal.id}에 연결됨`:"pose 없이 저장 가능 · 나중에 같은 goal_id와 매칭"}
-              </div>
-            </div>
-          );
-        })}
+            )}
+          </>
+        )}
       </div>
       {/* ── Goals section ── */}
       {goals.length>0&&(
         <div style={{borderTop:"1px solid rgba(255,102,128,0.15)",marginTop:4}}>
-          <div style={{padding:"6px 10px 4px",fontSize:10,color:"#ff6680",letterSpacing:1,fontWeight:"bold"}}>🎯 GOALS ({goals.length})</div>
-          {goals.map(g=>{
-            const isSel=selId===g.id;
-            const room=rooms.find(r=>r.id===g.room_id);
-            const target=[...carriers,...objects].find(s=>s.id===g.target_id);
-            return(
-              <div key={g.id} onClick={()=>setSelId(isSel?null:g.id)} style={{
-                margin:"0 8px 4px",padding:"5px 8px",borderRadius:5,cursor:"pointer",
-                background:isSel?"rgba(255,102,128,0.1)":"rgba(255,255,255,0.02)",
-                border:isSel?"1px solid rgba(255,102,128,0.4)":"1px solid rgba(255,102,128,0.1)",
-              }}>
-                <div style={{display:"flex",alignItems:"center",gap:5}}>
-                  <span style={{fontSize:11,color:"#ff6680"}}>🎯</span>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{color:"#ff6680",fontWeight:"bold",fontSize:11,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{g.id}: {g.label}</div>
-                    <div style={{color:"rgba(255,102,128,0.45)",fontSize:9}}>
-                      {room?room.label:"미할당"} → {target?target.label:"대상 없음"} · {Math.round(g.theta*180/Math.PI)}°
+          {sectionHeader("goals","🎯 GOALS",goals.length,"#ff6680")}
+          {sectionOpen.goals&&(
+            <div style={{maxHeight:220,overflow:"auto",paddingBottom:1}}>
+              {goals.map(g=>{
+                const isSel=selId===g.id;
+                const room=rooms.find(r=>r.id===g.room_id);
+                const target=[...carriers,...objects].find(s=>s.id===g.target_id);
+                return(
+                  <div key={g.id} onClick={()=>setSelId(isSel?null:g.id)} style={{
+                    margin:"0 8px 4px",padding:"5px 8px",borderRadius:5,cursor:"pointer",
+                    background:isSel?"rgba(255,102,128,0.1)":"rgba(255,255,255,0.02)",
+                    border:isSel?"1px solid rgba(255,102,128,0.4)":"1px solid rgba(255,102,128,0.1)",
+                  }}>
+                    <div style={{display:"flex",alignItems:"center",gap:5}}>
+                      <span style={{fontSize:11,color:"#ff6680"}}>🎯</span>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{color:"#ff6680",fontWeight:"bold",fontSize:11,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{g.id}: {g.label}</div>
+                        <div style={{color:"rgba(255,102,128,0.45)",fontSize:9}}>
+                          {room?room.label:"미할당"} → {target?target.label:"대상 없음"} · {Math.round(g.theta*180/Math.PI)}°
+                        </div>
+                        <div style={{color:"rgba(255,102,128,0.35)",fontSize:8}}>
+                          {(()=>{const w=toWorld(g.x,g.y);return `(${w.x}, ${w.y})m`;})()}
+                        </div>
+                      </div>
+                      <button onClick={ev=>{ev.stopPropagation();onDeleteGoal(g.id);}} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
                     </div>
-                    <div style={{color:"rgba(255,102,128,0.35)",fontSize:8}}>
-                      {(()=>{const w=toWorld(g.x,g.y);return `(${w.x}, ${w.y})m`;})()}
-                    </div>
+                    {isSel&&(
+                      <div style={{marginTop:4,display:"flex",flexDirection:"column",gap:3}} onClick={e=>e.stopPropagation()}>
+                        <div style={{display:"flex",alignItems:"center",gap:4}}>
+                          <span style={{fontSize:9,color:"rgba(255,102,128,0.5)",whiteSpace:"nowrap"}}>ID</span>
+                          <CommitInput value={g.id} onCommit={next=>onRenameGoalId?.(g.id,next)}
+                            style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}/>
+                        </div>
+                        <div style={{display:"flex",alignItems:"center",gap:4}}>
+                          <span style={{fontSize:9,color:"rgba(255,102,128,0.5)",whiteSpace:"nowrap"}}>라벨</span>
+                          <input value={g.label||""} onChange={e=>onReassign("goal",g.id,"label",e.target.value)}
+                            onClick={e=>e.stopPropagation()}
+                            style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}/>
+                        </div>
+                        <div style={{display:"flex",alignItems:"center",gap:4}}>
+                          <span style={{fontSize:9,color:"rgba(255,102,128,0.5)",whiteSpace:"nowrap"}}>소속방</span>
+                          <select value={g.room_id||""} onChange={e=>onReassign("goal",g.id,"room_id",e.target.value||null)}
+                            style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}>
+                            <option value="">없음</option>
+                            {rooms.map(r=><option key={r.id} value={r.id}>{r.label}</option>)}
+                          </select>
+                        </div>
+                        <div style={{display:"flex",alignItems:"center",gap:4}}>
+                          <span style={{fontSize:9,color:"rgba(255,102,128,0.5)",whiteSpace:"nowrap"}}>대상</span>
+                          <select value={g.target_id||""} onChange={e=>onReassign("goal",g.id,"target_id",e.target.value||null)}
+                            style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}>
+                            <option value="">없음</option>
+                            {carriers.map(c=><option key={c.id} value={c.id}>[캐] {c.label}</option>)}
+                            {objects.map(o=><option key={o.id} value={o.id}>[객] {o.label}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <button onClick={ev=>{ev.stopPropagation();onDeleteGoal(g.id);}} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
-                </div>
-                {isSel&&(
-                  <div style={{marginTop:4,display:"flex",flexDirection:"column",gap:3}} onClick={e=>e.stopPropagation()}>
-                    <div style={{display:"flex",alignItems:"center",gap:4}}>
-                      <span style={{fontSize:9,color:"rgba(255,102,128,0.5)",whiteSpace:"nowrap"}}>ID</span>
-                      <CommitInput value={g.id} onCommit={next=>onRenameGoalId?.(g.id,next)}
-                        style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}/>
-                    </div>
-                    <div style={{display:"flex",alignItems:"center",gap:4}}>
-                      <span style={{fontSize:9,color:"rgba(255,102,128,0.5)",whiteSpace:"nowrap"}}>라벨</span>
-                      <input value={g.label||""} onChange={e=>onReassign("goal",g.id,"label",e.target.value)}
-                        onClick={e=>e.stopPropagation()}
-                        style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}/>
-                    </div>
-                    <div style={{display:"flex",alignItems:"center",gap:4}}>
-                      <span style={{fontSize:9,color:"rgba(255,102,128,0.5)",whiteSpace:"nowrap"}}>소속방</span>
-                      <select value={g.room_id||""} onChange={e=>onReassign("goal",g.id,"room_id",e.target.value||null)}
-                        style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}>
-                        <option value="">없음</option>
-                        {rooms.map(r=><option key={r.id} value={r.id}>{r.label}</option>)}
-                      </select>
-                    </div>
-                    <div style={{display:"flex",alignItems:"center",gap:4}}>
-                      <span style={{fontSize:9,color:"rgba(255,102,128,0.5)",whiteSpace:"nowrap"}}>대상</span>
-                      <select value={g.target_id||""} onChange={e=>onReassign("goal",g.id,"target_id",e.target.value||null)}
-                        style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}>
-                        <option value="">없음</option>
-                        {carriers.map(c=><option key={c.id} value={c.id}>[캐] {c.label}</option>)}
-                        {objects.map(o=><option key={o.id} value={o.id}>[객] {o.label}</option>)}
-                      </select>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
       {/* ── Waypoints section ── */}
       {waypoints.length>0&&(
         <div style={{borderTop:"1px solid rgba(255,170,0,0.15)",marginTop:4}}>
-          <div style={{padding:"6px 10px 4px",fontSize:10,color:"#ffaa00",letterSpacing:1,fontWeight:"bold"}}>◎ WAYPOINTS ({waypoints.length})</div>
-          {waypoints.map((wp,i)=>{
-            const isSel=selWpIdx===i;
-            return(
-              <div key={i} onClick={()=>setSelWpIdx(isSel?null:i)} style={{
-                margin:"0 8px 4px",padding:"5px 8px",borderRadius:5,cursor:"pointer",
-                background:isSel?"rgba(255,170,0,0.1)":"rgba(255,255,255,0.02)",
-                border:isSel?"1px solid rgba(255,170,0,0.4)":"1px solid rgba(255,170,0,0.1)",
-              }}>
-                <div style={{display:"flex",alignItems:"center",gap:5}}>
-                  <span style={{fontSize:11,color:"#ffaa00"}}>●</span>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{color:"#ffaa00",fontWeight:"bold",fontSize:11}}>{wp.id||`w${i+1}`}: {wp.label}</div>
-                    <div style={{color:"rgba(255,170,0,0.45)",fontSize:9}}>{(()=>{const w=toWorld(wp.x,wp.y);return `(${w.x}, ${w.y})m`;})()} · {Math.round(wp.theta*180/Math.PI)}°</div>
+          {sectionHeader("waypoints","◎ WAYPOINTS",waypoints.length,"#ffaa00")}
+          {sectionOpen.waypoints&&(
+            <div style={{maxHeight:180,overflow:"auto",paddingBottom:1}}>
+              {waypoints.map((wp,i)=>{
+                const isSel=selWpIdx===i;
+                return(
+                  <div key={i} onClick={()=>setSelWpIdx(isSel?null:i)} style={{
+                    margin:"0 8px 4px",padding:"5px 8px",borderRadius:5,cursor:"pointer",
+                    background:isSel?"rgba(255,170,0,0.1)":"rgba(255,255,255,0.02)",
+                    border:isSel?"1px solid rgba(255,170,0,0.4)":"1px solid rgba(255,170,0,0.1)",
+                  }}>
+                    <div style={{display:"flex",alignItems:"center",gap:5}}>
+                      <span style={{fontSize:11,color:"#ffaa00"}}>●</span>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{color:"#ffaa00",fontWeight:"bold",fontSize:11}}>{wp.id||`w${i+1}`}: {wp.label}</div>
+                        <div style={{color:"rgba(255,170,0,0.45)",fontSize:9}}>{(()=>{const w=toWorld(wp.x,wp.y);return `(${w.x}, ${w.y})m`;})()} · {Math.round(wp.theta*180/Math.PI)}°</div>
+                      </div>
+                      <button onClick={ev=>{ev.stopPropagation();onDeleteWp(i);}} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
+                    </div>
+                    {isSel&&(
+                      <div style={{display:"flex",gap:5,alignItems:"center",marginTop:5}}>
+                        <span style={{fontSize:9,color:"rgba(255,170,0,0.5)"}}>θ(rad)</span>
+                        <input type="number" step=".1" value={wp.theta.toFixed(2)}
+                          onChange={e=>{const v=parseFloat(e.target.value)||0;setWaypoints(p=>p.map((w,j)=>j===i?{...w,theta:v}:w));}}
+                          onClick={ev=>ev.stopPropagation()}
+                          style={{...INPUT,width:60,padding:"2px 5px",fontSize:11}}/>
+                      </div>
+                    )}
                   </div>
-                  <button onClick={ev=>{ev.stopPropagation();onDeleteWp(i);}} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
-                </div>
-                {isSel&&(
-                  <div style={{display:"flex",gap:5,alignItems:"center",marginTop:5}}>
-                    <span style={{fontSize:9,color:"rgba(255,170,0,0.5)"}}>θ(rad)</span>
-                    <input type="number" step=".1" value={wp.theta.toFixed(2)}
-                      onChange={e=>{const v=parseFloat(e.target.value)||0;setWaypoints(p=>p.map((w,j)=>j===i?{...w,theta:v}:w));}}
-                      onClick={ev=>ev.stopPropagation()}
-                      style={{...INPUT,width:60,padding:"2px 5px",fontSize:11}}/>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
       <div style={{padding:10,borderTop:"1px solid rgba(0,212,255,0.1)",display:"flex",flexDirection:"column",gap:5}}>
