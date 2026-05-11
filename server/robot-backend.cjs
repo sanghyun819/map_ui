@@ -20,6 +20,9 @@ let nav2Options = null;
 let bagProcess = null;
 let bagLastOutput = "";
 let bagOptions = null;
+let bagRecordProcess = null;
+let bagRecordLastOutput = "";
+let bagRecordOptions = null;
 let bagFinished = false;
 let bagStartedAtMs = 0;
 let bagPaused = false;
@@ -32,6 +35,10 @@ function appendOutput(current, data) {
 
 function appendBagOutput(data) {
   bagLastOutput = appendOutput(bagLastOutput, data);
+}
+
+function appendBagRecordOutput(data) {
+  bagRecordLastOutput = appendOutput(bagRecordLastOutput, data);
 }
 
 function appendRosbridgeOutput(data) {
@@ -53,6 +60,17 @@ function rosSetupCommand() {
 function shellQuote(value) {
   return `'${String(value ?? "").replace(/'/g, `'"'"'`)}'`;
 }
+
+const DEFAULT_BAG_RECORD_DIR = process.env.MAP_UI_BAG_RECORD_DIR || "/home/nvidia/rby1_nav2/src/rby1_nav2/bag";
+const DEFAULT_BAG_RECORD_TOPICS = [
+  "/tf",
+  "/odom",
+  "/joint_states",
+  "/scan_merged",
+  "/camera/camera_head/color/image_raw/compressed",
+  "/camera/camera_left/color/image_rect_raw/compressed",
+  "/camera/camera_right/color/image_rect_raw/compressed",
+];
 
 const THOR_DEFAULTS = {
   host: process.env.THOR_IP || "192.168.78.11",
@@ -437,6 +455,75 @@ function stopBagProcess() {
   return stopProcessGroup(proc);
 }
 
+function stopBagRecordProcess() {
+  if (!bagRecordProcess) return false;
+  const proc = bagRecordProcess;
+  bagRecordProcess = null;
+  try {
+    if (proc.pid) process.kill(-proc.pid, "SIGINT");
+  } catch (e) {
+    try { proc.kill("SIGINT"); } catch (_) {}
+  }
+  setTimeout(() => {
+    try {
+      if (!proc.killed && proc.pid) process.kill(-proc.pid, "SIGTERM");
+    } catch (e) {
+      try { proc.kill("SIGTERM"); } catch (_) {}
+    }
+  }, 10000);
+  return true;
+}
+
+function bagRecordName() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, "0");
+  return `bag_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+function uniqueBagRecordOutput(outputDir, name) {
+  let candidateName = name;
+  let outputPath = path.join(outputDir, candidateName);
+  for (let i = 2; fs.existsSync(outputPath); i += 1) {
+    candidateName = `${name}_${i}`;
+    outputPath = path.join(outputDir, candidateName);
+  }
+  return { name: candidateName, outputPath };
+}
+
+function startBagRecordProcess(options = {}) {
+  if (bagRecordProcess) return { running: true, pid: bagRecordProcess.pid, options: bagRecordOptions };
+  bagRecordLastOutput = "";
+
+  const outputDir = String(options.outputDir || options.output_dir || DEFAULT_BAG_RECORD_DIR).trim() || DEFAULT_BAG_RECORD_DIR;
+  let name = String(options.name || options.bagName || bagRecordName()).trim() || bagRecordName();
+  const topics = Array.isArray(options.topics) && options.topics.length
+    ? options.topics.map(String).filter(Boolean)
+    : DEFAULT_BAG_RECORD_TOPICS;
+  fs.mkdirSync(outputDir, { recursive: true });
+  const uniqueOutput = uniqueBagRecordOutput(outputDir, name);
+  name = uniqueOutput.name;
+  const outputPath = uniqueOutput.outputPath;
+  const cmd = [
+    rosSetupCommand(),
+    `exec ros2 bag record -o "$BAG_RECORD_OUTPUT" ${topics.map(shellQuote).join(" ")}`,
+  ].join("; ");
+
+  const child = spawn("bash", ["-lc", cmd], {
+    env: { ...process.env, BAG_RECORD_OUTPUT: outputPath },
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  bagRecordProcess = child;
+  bagRecordOptions = { outputDir, name, outputPath, topics };
+  child.stdout.on("data", appendBagRecordOutput);
+  child.stderr.on("data", appendBagRecordOutput);
+  child.on("close", (code, signal) => {
+    appendBagRecordOutput(`\n[rosbag record exited code=${code} signal=${signal || ""}]\n`);
+    if (bagRecordProcess?.pid === child.pid) bagRecordProcess = null;
+  });
+  return { running: true, pid: child.pid, options: bagRecordOptions };
+}
+
 function startBagProcess(options = {}) {
   const bagPath = options.path;
   if (!bagPath) throw new Error("bag path is required");
@@ -608,6 +695,9 @@ const apiRoutes = {
     duration: bagOptions?.duration || 0,
     output: bagLastOutput,
   }),
+  "POST /api/rosbag/record/start": async body => startBagRecordProcess(body || {}),
+  "POST /api/rosbag/record/stop": async () => ({ running: false, stopped: stopBagRecordProcess(), options: bagRecordOptions }),
+  "GET /api/rosbag/record/status": async () => ({ running: !!bagRecordProcess, output: bagRecordLastOutput, options: bagRecordOptions }),
   "GET /api/health": async () => ({ ok: true, pid: process.pid }),
 };
 
@@ -679,6 +769,7 @@ function shutdown() {
   stopSlamProcess();
   stopNav2Process();
   stopBagProcess();
+  stopBagRecordProcess();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref();
 }

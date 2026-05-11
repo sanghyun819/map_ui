@@ -98,6 +98,9 @@ function createRobotBackendAPI(baseUrl) {
     rosbagResume: () => post("/api/rosbag/resume"),
     rosbagSeek: (options) => post("/api/rosbag/seek", options),
     rosbagStatus: () => get("/api/rosbag/status"),
+    rosbagRecordStart: (options) => post("/api/rosbag/record/start", options),
+    rosbagRecordStop: () => post("/api/rosbag/record/stop"),
+    rosbagRecordStatus: () => get("/api/rosbag/record/status"),
   };
 }
 
@@ -165,6 +168,16 @@ const QUICK_MAP_DIR = "/home/nvidia/rby1_nav2/src/rby1_nav2/maps";
 const QUICK_MAP_NAMES = {1:"map_first",2:"map_second"};
 const DEFAULT_WORKSPACE_ROOT = "/home/nvidia/rby1_nav2";
 const DEFAULT_MAP_SEARCH_DIR = "/home/nvidia/rby1_nav2/src/rby1_nav2/maps";
+const DEFAULT_BAG_RECORD_DIR = "/home/nvidia/rby1_nav2/src/rby1_nav2/bag";
+const DEFAULT_BAG_RECORD_TOPICS = [
+  "/tf",
+  "/odom",
+  "/joint_states",
+  "/scan_merged",
+  "/camera/camera_head/color/image_raw/compressed",
+  "/camera/camera_left/color/image_rect_raw/compressed",
+  "/camera/camera_right/color/image_rect_raw/compressed",
+];
 
 function startTaskFromId(startPoses,id){
   const value=String(id||"");
@@ -799,16 +812,20 @@ function SemanticDialog({mode, typeOptions, onConfirm, onCancel}) {
 }
 
 // ─── Goal dialog ─────────────────────────────────────────────────────────────
-function GoalDialog({rooms,carriers,objects,roomId,goalId,typeOptions,onConfirm,onCancel}){
+function GoalDialog({rooms,carriers,objects,goalList,roomId,goalId,typeOptions,onConfirm,onCancel}){
   // Targets are optional. A semantic goal can be just a pose, or it can face a carrier/object.
   const carrierTargets=carriers.map(c=>{const ct=typeOptions.carriers.find(t=>t.id===c.type);return{id:c.id,label:c.label,icon:ct?.icon||"📦",type:"carrier",color:ct?.color||"#4fc3f7"};});
   const objectTargets=objects.map(o=>{const ot=typeOptions.objects.find(t=>t.id===o.type);return{id:o.id,label:o.label,icon:ot?.icon||"🔹",type:"object",color:ot?.color||"#ffaa00"};});
   const allTargets=[...carrierTargets,...objectTargets];
   const [targetId,setTargetId]=useState(allTargets[0]?.id||"");
+  const [goalListId,setGoalListId]=useState("");
   const [label,setLabel]=useState("");
   const room=rooms.find(r=>r.id===roomId);
   const selectedTarget=allTargets.find(t=>t.id===targetId);
-  const defaultLabel=label||(selectedTarget?`${room?`${room.label} to `:"to "}${selectedTarget.label}`:(room?`${room.label} goal`:(goalId||"semantic goal")));
+  const selectedGoalListItem=(goalList||[]).find(item=>item.id===goalListId);
+  const selectedGoalId=String(selectedGoalListItem?.goal_id||"").trim();
+  const defaultLabel=label||selectedGoalListItem?.label||(selectedTarget?`${room?`${room.label} to `:"to "}${selectedTarget.label}`:(room?`${room.label} goal`:(goalId||"semantic goal")));
+  const confirmGoal=()=>onConfirm(targetId,defaultLabel,selectedGoalId||null,selectedGoalId?goalListId:null);
   const renderTargetButton=(t)=>(
     <button key={t.id} onClick={()=>setTargetId(t.id)} style={{
       ...btn(targetId===t.id),textAlign:"left",padding:"6px 10px",
@@ -827,6 +844,23 @@ function GoalDialog({rooms,carriers,objects,roomId,goalId,typeOptions,onConfirm,
           <h3 style={{margin:0,color:"#ff6680",letterSpacing:1,fontSize:14}}>시맨틱 골 추가</h3>
         </div>
         <div style={{fontSize:10,color:"rgba(0,212,255,0.5)",marginBottom:10}}>📍 위치: {room?`${room.label} 내부`:"방 미할당"}</div>
+        {goalList?.length>0&&(
+          <div style={{marginBottom:14}}>
+            <div style={{fontSize:10,color:"rgba(179,136,255,0.75)",marginBottom:6,letterSpacing:1}}>GOAL LIST에서 선택 (선택)</div>
+            <select value={goalListId} onChange={e=>setGoalListId(e.target.value)}
+              style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:12,borderColor:"rgba(179,136,255,0.32)"}}>
+              <option value="">새 goal pose로 저장</option>
+              {goalList.map(item=>(
+                <option key={item.id} value={item.id}>
+                  {item.label||item.goal_id||item.id}{item.goal_id?` (${item.goal_id})`:""}
+                </option>
+              ))}
+            </select>
+            <div style={{marginTop:5,fontSize:9,color:"rgba(179,136,255,0.5)",lineHeight:1.45}}>
+              선택하면 이 pose goal이 해당 goal_id와 매칭됩니다. 목록 자체는 자동으로 추가/수정하지 않습니다.
+            </div>
+          </div>
+        )}
         <div style={{marginBottom:14}}>
           <div style={{fontSize:10,color:"rgba(0,212,255,0.5)",marginBottom:6,letterSpacing:1}}>바라볼 대상 선택 (선택)</div>
           <div style={{maxHeight:180,overflow:"auto",display:"flex",flexDirection:"column",gap:3}}>
@@ -863,13 +897,13 @@ function GoalDialog({rooms,carriers,objects,roomId,goalId,typeOptions,onConfirm,
         <div style={{marginBottom:18}}>
           <div style={{fontSize:10,color:"rgba(0,212,255,0.5)",marginBottom:6,letterSpacing:1}}>골 라벨</div>
           <input autoFocus placeholder={defaultLabel} value={label} onChange={e=>setLabel(e.target.value)}
-            onKeyDown={e=>e.key==="Enter"&&onConfirm(targetId,defaultLabel)}
+            onKeyDown={e=>e.key==="Enter"&&confirmGoal()}
             style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:13}}/>
         </div>
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
           <button style={btn()} onClick={onCancel}>취소</button>
           <button style={{...btn(true),borderColor:"#ff6680",color:"#ff6680"}}
-            onClick={()=>onConfirm(targetId,defaultLabel)}>
+            onClick={confirmGoal}>
             🎯 추가
           </button>
         </div>
@@ -2068,6 +2102,11 @@ export default function Nav2MapEditor() {
   const [bagSeekStep, setBagSeekStep] = useState(10);
   const [bagPaused, setBagPaused] = useState(false);
   const [bagBusy, setBagBusy] = useState(false);
+  const [bagRecording, setBagRecording] = useState(false);
+  const [bagRecordBusy, setBagRecordBusy] = useState(false);
+  const [bagRecordDir, setBagRecordDir] = useState(DEFAULT_BAG_RECORD_DIR);
+  const [bagRecordName, setBagRecordName] = useState("");
+  const [bagRecordPath, setBagRecordPath] = useState("");
   const [fileDialog, setFileDialog] = useState(null);
   const fileDialogResolveRef = useRef(null);
   const [showWorkspaceDlg, setShowWorkspaceDlg] = useState(false);
@@ -2444,6 +2483,24 @@ export default function Nav2MapEditor() {
           if(st?.finished)setBagOffset(0);
           else if(Number.isFinite(st?.offset))setBagOffset(st.offset);
           if(Number.isFinite(st?.duration)&&st.duration>0)setBagDuration(st.duration);
+        }
+      }catch(e){/* ignore */}
+    };
+    sync();
+    const timer=setInterval(sync,1000);
+    return()=>{alive=false;clearInterval(timer);};
+  },[]);
+
+  useEffect(()=>{
+    if(!hostAPI?.rosbagRecordStatus)return;
+    let alive=true;
+    const sync=async()=>{
+      try{
+        const st=await hostAPI.rosbagRecordStatus();
+        if(alive){
+          setBagRecording(!!st?.running);
+          if(st?.options?.outputPath)setBagRecordPath(st.options.outputPath);
+          if(st?.running&&st?.options?.outputDir)setBagRecordDir(st.options.outputDir);
         }
       }catch(e){/* ignore */}
     };
@@ -3134,9 +3191,15 @@ export default function Nav2MapEditor() {
   },[semDlg,maps,rooms,carriers,typeOptions]);
 
   // ── Goal confirm (update goal placed by drag with target + label) ──
-  const onGoalConfirm=useCallback((targetId,label)=>{
+  const onGoalConfirm=useCallback((targetId,label,goalIdOverride=null,goalListItemId=null)=>{
     if(!goalDlg)return;
     const {goalId,theta:dragTheta}=goalDlg;
+    const nextGoalId=String(goalIdOverride||"").trim();
+    if(nextGoalId&&goalsRef.current.some(g=>g.id===nextGoalId&&g.id!==goalId)){
+      setStatus(`⚠ 이미 있는 goal_id입니다: ${nextGoalId}`);
+      return false;
+    }
+    const finalGoalId=nextGoalId||goalId;
     // If user didn't drag (theta still 0), auto-calculate direction toward target
     const target=targetId?[...carriers,...objects].find(s=>s.id===targetId):null;
     setGoals(p=>p.map(g=>{
@@ -3149,12 +3212,14 @@ export default function Nav2MapEditor() {
         else{const poly=shapeToPoly(target);if(poly){const c=polyCentroid(poly);tx=c.x;ty=c.y;}else{tx=target.x+(target.w||0)/2;ty=target.y+(target.h||0)/2;}}
         theta=Math.atan2(-(ty-g.y),tx-g.x);
       }
-      return{...g,label,target_id:targetId||null,theta};
+      return{...g,id:finalGoalId,label,target_id:targetId||null,theta};
     }));
+    if(nextGoalId&&selSemId===goalId)setSelSemId(nextGoalId);
     setGoalDlg(null);
     setTimeout(saveSnap,0);
-    setStatus(`🎯 시맨틱 골 설정: ${label}`);
-  },[goalDlg,carriers,objects,saveSnap]);
+    setStatus(`🎯 시맨틱 골 설정: ${label}${finalGoalId?` (${finalGoalId})`:""}`);
+    return true;
+  },[goalDlg,carriers,objects,saveSnap,selSemId]);
 
   // ── Wheel zoom ──
   const onWheel=useCallback((e)=>{
@@ -3860,6 +3925,20 @@ export default function Nav2MapEditor() {
     }
   },[pickHostPath]);
 
+  const chooseBagRecordDir=useCallback(async()=>{
+    if(!hostAPI?.openFileDialog){setStatus("⚠ bag 저장 폴더 선택은 Electron 또는 robot backend에서만 가능합니다");return;}
+    const selected=await pickHostPath({
+      title:"ROS2 bag 저장 폴더 선택",
+      defaultPath:bagRecordDir||DEFAULT_BAG_RECORD_DIR,
+      properties:["openDirectory"],
+    });
+    if(selected){
+      const dir=Array.isArray(selected)?selected[0]:selected;
+      setBagRecordDir(dir);
+      setStatus(`✅ bag 저장 폴더: ${dir}`);
+    }
+  },[bagRecordDir,pickHostPath]);
+
   const playBag=useCallback(async()=>{
     if(!hostAPI?.rosbagPlay){setStatus("⚠ bag 실행은 Electron 또는 robot backend에서만 가능합니다");return;}
     if(!bagPath){setStatus("⚠ 재생할 bag 폴더를 먼저 선택하세요");return;}
@@ -3893,6 +3972,43 @@ export default function Nav2MapEditor() {
       setBagBusy(false);
     }
   },[]);
+
+  const startBagRecord=useCallback(async()=>{
+    if(!hostAPI?.rosbagRecordStart){setStatus("⚠ bag 저장은 Electron 또는 robot backend에서만 가능합니다");return;}
+    const outputDir=(bagRecordDir||DEFAULT_BAG_RECORD_DIR).trim();
+    const name=bagRecordName.trim();
+    setBagRecordBusy(true);
+    try{
+      const res=await hostAPI.rosbagRecordStart({
+        outputDir,
+        ...(name?{name}:{}),
+        topics:DEFAULT_BAG_RECORD_TOPICS,
+      });
+      setBagRecording(!!res?.running);
+      const outputPath=res?.options?.outputPath||"";
+      if(outputPath)setBagRecordPath(outputPath);
+      setStatus(`⏺ bag 저장 시작: ${outputPath||outputDir}`);
+    }catch(e){
+      setStatus(`⚠ bag 저장 시작 실패: ${e.message}`);
+    }finally{
+      setBagRecordBusy(false);
+    }
+  },[bagRecordDir,bagRecordName]);
+
+  const stopBagRecord=useCallback(async()=>{
+    if(!hostAPI?.rosbagRecordStop)return;
+    setBagRecordBusy(true);
+    try{
+      const res=await hostAPI.rosbagRecordStop();
+      setBagRecording(false);
+      const outputPath=res?.options?.outputPath||bagRecordPath;
+      setStatus(`■ bag 저장 중지${outputPath?`: ${basenameFromPath(outputPath)}`:""}`);
+    }catch(e){
+      setStatus(`⚠ bag 저장 중지 실패: ${e.message}`);
+    }finally{
+      setBagRecordBusy(false);
+    }
+  },[bagRecordPath]);
 
   const pauseBag=useCallback(async()=>{
     if(!hostAPI?.rosbagPause)return;
@@ -4300,6 +4416,21 @@ export default function Nav2MapEditor() {
                 <button style={btn(false,true)} onClick={stopBag} disabled={bagBusy}>■ Bag</button>
               ):(
                 <button style={{...btn(),opacity:bagPath&&!bagBusy?1:.45}} onClick={playBag} disabled={!bagPath||bagBusy}>▶ Bag</button>
+              )}
+              <button style={{...btn(),opacity:(bagRecording||bagRecordBusy)? .45 : 1,color:"#ff6680",borderColor:"rgba(255,102,128,0.28)"}} onClick={chooseBagRecordDir} disabled={bagRecording||bagRecordBusy} title={bagRecordDir||DEFAULT_BAG_RECORD_DIR}>저장위치</button>
+              <input value={bagRecordDir} onChange={e=>setBagRecordDir(e.target.value)} disabled={bagRecording||bagRecordBusy}
+                placeholder={DEFAULT_BAG_RECORD_DIR} title="bag 저장 폴더"
+                style={{...INPUT,width:250,padding:"3px 5px",fontSize:10,opacity:bagRecording? .55 : 1,borderColor:"rgba(255,102,128,0.22)"}}/>
+              <input value={bagRecordName} onChange={e=>setBagRecordName(e.target.value)} disabled={bagRecording||bagRecordBusy}
+                placeholder="bag 이름 자동" title="비워두면 bag_YYYYMMDD_HHMMSS"
+                style={{...INPUT,width:112,padding:"3px 5px",fontSize:10,opacity:bagRecording? .55 : 1,borderColor:"rgba(255,102,128,0.22)"}}/>
+              {bagRecording?(
+                <button style={btn(false,true)} onClick={stopBagRecord} disabled={bagRecordBusy} title={bagRecordPath||DEFAULT_BAG_RECORD_DIR}>■ Rec</button>
+              ):(
+                <button style={{...btn(),opacity:bagRecordBusy? .45 : 1,color:"#ff6680",borderColor:"rgba(255,102,128,0.35)"}} onClick={startBagRecord} disabled={bagRecordBusy}
+                  title={`${bagRecordDir||DEFAULT_BAG_RECORD_DIR}\n${DEFAULT_BAG_RECORD_TOPICS.join("\n")}`}>
+                  ⏺ Rec
+                </button>
               )}
             </>
           )}
@@ -4762,7 +4893,7 @@ export default function Nav2MapEditor() {
       {semDlg&&<SemanticDialog mode={semDlg.mode} typeOptions={typeOptions} onConfirm={onSemConfirm} onCancel={()=>setSemDlg(null)}/>}
 
       {/* ── GOAL DIALOG ── */}
-      {goalDlg&&<GoalDialog rooms={rooms} carriers={carriers} objects={objects} roomId={goalDlg.roomId} goalId={goalDlg.goalId} typeOptions={typeOptions} onConfirm={onGoalConfirm} onCancel={()=>{
+      {goalDlg&&<GoalDialog rooms={rooms} carriers={carriers} objects={objects} goalList={goalList} roomId={goalDlg.roomId} goalId={goalDlg.goalId} typeOptions={typeOptions} onConfirm={onGoalConfirm} onCancel={()=>{
         // Remove the goal that was placed during drag
         if(goalDlg.goalId) setGoals(p=>p.filter(g=>g.id!==goalDlg.goalId));
         setGoalDlg(null);

@@ -39,6 +39,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   rosbagResume: () => ipcRenderer.invoke("rosbag:resume"),
   rosbagSeek: (options) => ipcRenderer.invoke("rosbag:seek", options),
   rosbagStatus: () => ipcRenderer.invoke("rosbag:status"),
+  rosbagRecordStart: (options) => ipcRenderer.invoke("rosbagRecord:start", options),
+  rosbagRecordStop: () => ipcRenderer.invoke("rosbagRecord:stop"),
+  rosbagRecordStatus: () => ipcRenderer.invoke("rosbagRecord:status"),
 
   // Check if running in Electron
   isElectron: true,
