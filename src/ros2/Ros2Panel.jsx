@@ -213,6 +213,44 @@ function TFTree({ availableFrames, stats }) {
   );
 }
 
+function CameraPreview({ frame, waiting }) {
+  const [imgError, setImgError] = useState("");
+
+  useEffect(() => {
+    setImgError("");
+  }, [frame?.url]);
+
+  if (!frame && !waiting) return null;
+
+  return (
+    <div style={{ ...S.section }}>
+      <div style={S.sectionLabel}>
+        <span>Camera Preview</span>
+        <span style={{ fontSize: 8, color: "#4a7080", maxWidth: 145, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {frame?.topic || "waiting"}
+        </span>
+      </div>
+      <div style={{ border: "1px solid rgba(0,212,255,0.12)", background: "rgba(0,0,0,0.35)", borderRadius: 4, padding: 4 }}>
+        {frame?.url && !imgError ? (
+          <img
+            src={frame.url}
+            alt=""
+            onError={() => setImgError("browser failed to decode image payload")}
+            style={{ display: "block", width: "100%", maxHeight: 180, objectFit: "contain", imageRendering: "auto" }}
+          />
+        ) : (
+          <div style={{ minHeight: 88, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", color: frame?.error || imgError ? "#ff6680" : "#4a7080", fontSize: 10, lineHeight: 1.5, padding: 8 }}>
+            {imgError || frame?.error || "waiting for image frames"}
+          </div>
+        )}
+        <div style={{ fontSize: 8, color: "#4a7080", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {frame?.encoding || "camera display active"}{frame?.width&&frame?.height?` · ${frame.width}×${frame.height}`:""}{frame?.bytes?` · ${frame.bytes} bytes`:""}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════════
 // Main Panel
 // ══════════════════════════════════════════════════════════════════
@@ -325,6 +363,7 @@ export default function Ros2Panel({ bridge, defaultUrl = "ws://localhost:9090", 
 
   const st = stats?.current || {};
   const cameraFrame = cameraDataUrl?.current || null;
+  const hasCameraDisplay = Object.values(vis).some(v => v.enabled !== false && v.viz === "camera");
 
   return (
     <div style={{ width: 300, background: "#070f1e", borderLeft: "1px solid rgba(0,212,255,0.12)", display: "flex", flexDirection: "column", flexShrink: 0, fontSize: 12, userSelect: "none" }}>
@@ -474,27 +513,8 @@ export default function Ros2Panel({ bridge, defaultUrl = "ws://localhost:9090", 
         )}
 
         {/* ── Camera / depth preview ── */}
-        {connState === STATES.CONNECTED && cameraFrame && (
-          <div style={{ ...S.section }}>
-            <div style={S.sectionLabel}>
-              <span>Camera Preview</span>
-              <span style={{ fontSize: 8, color: "#4a7080", maxWidth: 145, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {cameraFrame.topic}
-              </span>
-            </div>
-            <div style={{ border: "1px solid rgba(0,212,255,0.12)", background: "rgba(0,0,0,0.35)", borderRadius: 4, padding: 4 }}>
-              {cameraFrame.url ? (
-                <img src={cameraFrame.url} alt="" style={{ display: "block", width: "100%", maxHeight: 180, objectFit: "contain", imageRendering: "auto" }} />
-              ) : (
-                <div style={{ minHeight: 88, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", color: "#ff6680", fontSize: 10, lineHeight: 1.5, padding: 8 }}>
-                  {cameraFrame.error || "image frame received, but preview decode failed"}
-                </div>
-              )}
-              <div style={{ fontSize: 8, color: "#4a7080", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {cameraFrame.encoding}{cameraFrame.width&&cameraFrame.height?` · ${cameraFrame.width}×${cameraFrame.height}`:""}{cameraFrame.bytes?` · ${cameraFrame.bytes} bytes`:""}
-              </div>
-            </div>
-          </div>
+        {connState === STATES.CONNECTED && (
+          <CameraPreview frame={cameraFrame} waiting={hasCameraDisplay && !cameraFrame} />
         )}
 
         {/* ── Status Bar (rviz2 bottom info) ── */}
