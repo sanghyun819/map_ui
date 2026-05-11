@@ -260,7 +260,8 @@ export default function Ros2Panel({ bridge, defaultUrl = "ws://localhost:9090", 
   const [topics, setTopics] = useState([]);
   const [loadingTopics, setLoadingTopics] = useState(false);
   const [topicFilter, setTopicFilter] = useState("");
-  const [vis, setVis] = useState({});
+  const [vis, setVis] = useState(() => externalVis || {});
+  const lastSentVisRef = useRef(null);
   const [showTopicBrowser, setShowTopicBrowser] = useState(false);
   const [manualTopic, setManualTopic] = useState("");
   const [manualType, setManualType] = useState(KNOWN_TYPES[0].type);
@@ -310,13 +311,15 @@ export default function Ros2Panel({ bridge, defaultUrl = "ws://localhost:9090", 
   }, [connState, showTopicBrowser, fetchTopics]);
 
   useEffect(() => {
-    if (externalVis && externalVis !== vis) setVis(externalVis);
-  }, [externalVis]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!externalVis) return;
+    if (externalVis === lastSentVisRef.current) return;
+    setVis(current => current === externalVis ? current : externalVis);
+  }, [externalVis]);
 
   useEffect(() => {
-    if (externalVis && externalVis !== vis) return;
+    lastSentVisRef.current = vis;
     if (onVisChange) onVisChange(vis);
-  }, [vis, onVisChange, externalVis]);
+  }, [vis, onVisChange]);
 
   const filteredTopics = useMemo(() => {
     const q = topicFilter.trim().toLowerCase();
