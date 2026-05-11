@@ -69,6 +69,11 @@ function isCameraDisplay(v = {}) {
   return v.viz === "camera" || typeSuffix === "CompressedImage" || typeSuffix === "Image";
 }
 
+const SENSOR_DATA_QOS = {
+  qos: { reliability: "best_effort", durability: "volatile", history: "keep_last", depth: 1 },
+  queue_length: 1,
+};
+
 function clampDecay(v) {
   const d = Number(v);
   if (!Number.isFinite(d) || d < 0) return 0;
@@ -745,7 +750,7 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
             statsRef.current.lastError = `lidar: ${e.message}`;
             console.warn("[ROS2] Lidar parse error:", e);
           }
-        }, 100);
+        }, 100, SENSOR_DATA_QOS);
         unsubsRef.current.push(unsub);
       }
 
@@ -906,7 +911,7 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
             cameraRef.current = { url: null, topic, encoding: typeSuffix, ts: Date.now(), error: e.message };
             requestDraw();
           }
-        }, 200);
+        }, 200, SENSOR_DATA_QOS);
         unsubsRef.current.push(unsub);
       }
 
