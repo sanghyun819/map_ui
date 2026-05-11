@@ -1255,6 +1255,7 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPoses,s
   const toggle=(id)=>setExpanded(p=>({...p,[id]:!p[id]}));
   const startPoseCount=Object.values(startPoses||{}).filter(Boolean).length;
   const startPoseEntries=startTasks.map(task=>({task,pose:startPoses?.[task]})).filter(x=>x.pose);
+  const goalListCount=goals.filter(g=>g.required).length;
 
   const insidePoly=(poly,obj)=>{
     if(!poly)return false;
@@ -1461,7 +1462,7 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPoses,s
   return(
     <div style={{width:260,background:"#070f1e",borderLeft:"1px solid rgba(0,212,255,0.12)",display:"flex",flexDirection:"column",flexShrink:0}}>
       <div style={{padding:"9px 14px",borderBottom:"1px solid rgba(0,212,255,0.12)",color:"#00d4ff",fontWeight:"bold",letterSpacing:1,fontSize:12,display:"flex",justifyContent:"space-between"}}>
-        <span>🗺 시맨틱 레이어</span><span style={{opacity:.4,fontSize:10}}>{maps.length}맵·{rooms.length}방·{carriers.length}캐·{objects.length}객·{goals.length}골·{waypoints.length}WP{startPoseCount?`·시작${startPoseCount}`:""}</span>
+        <span>🗺 시맨틱 레이어</span><span style={{opacity:.4,fontSize:10}}>{maps.length}맵·{rooms.length}방·{carriers.length}캐·{objects.length}객·{goals.length}골{goalListCount?`/L${goalListCount}`:""}·{waypoints.length}WP{startPoseCount?`·시작${startPoseCount}`:""}</span>
       </div>
       <div style={{flex:1,overflow:"auto",padding:8}}>
         {maps.length===0&&rooms.length===0&&carriers.length===0&&objects.length===0&&waypoints.length===0&&goals.length===0&&!startPoseCount&&(
@@ -1551,7 +1552,7 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPoses,s
       {/* ── Goals section ── */}
       {goals.length>0&&(
         <div style={{borderTop:"1px solid rgba(255,102,128,0.15)",marginTop:4}}>
-          <div style={{padding:"6px 10px 4px",fontSize:10,color:"#ff6680",letterSpacing:1,fontWeight:"bold"}}>🎯 GOALS ({goals.length})</div>
+          <div style={{padding:"6px 10px 4px",fontSize:10,color:"#ff6680",letterSpacing:1,fontWeight:"bold"}}>🎯 GOALS ({goals.length}){goalListCount?` · LIST ${goalListCount}`:""}</div>
           {goals.map(g=>{
             const isSel=selId===g.id;
             const room=rooms.find(r=>r.id===g.room_id);
@@ -1565,7 +1566,10 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPoses,s
                 <div style={{display:"flex",alignItems:"center",gap:5}}>
                   <span style={{fontSize:11,color:"#ff6680"}}>🎯</span>
                   <div style={{flex:1,minWidth:0}}>
-                    <div style={{color:"#ff6680",fontWeight:"bold",fontSize:11}}>{g.id}: {g.label}</div>
+                    <div style={{color:"#ff6680",fontWeight:"bold",fontSize:11,display:"flex",alignItems:"center",gap:5,minWidth:0}}>
+                      <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{g.id}: {g.label}</span>
+                      {g.required&&<span style={{flexShrink:0,color:"#00e676",fontSize:8,letterSpacing:.8}}>LIST</span>}
+                    </div>
                     <div style={{color:"rgba(255,102,128,0.45)",fontSize:9}}>
                       {room?room.label:"미할당"} → {target?target.label:"대상 없음"} · {Math.round(g.theta*180/Math.PI)}°
                     </div>
@@ -1573,10 +1577,20 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,startPoses,s
                       {(()=>{const w=toWorld(g.x,g.y);return `(${w.x}, ${w.y})m`;})()}
                     </div>
                   </div>
+                  <label onClick={ev=>ev.stopPropagation()} style={{display:"inline-flex",alignItems:"center",gap:3,color:g.required?"#00e676":"rgba(255,102,128,0.45)",fontSize:9,cursor:"pointer",flexShrink:0}}>
+                    <input type="checkbox" checked={!!g.required} onChange={e=>onReassign("goal",g.id,"required",e.target.checked)}
+                      style={{width:12,height:12,accentColor:"#00e676",margin:0}}/>
+                    List
+                  </label>
                   <button onClick={ev=>{ev.stopPropagation();onDeleteGoal(g.id);}} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
                 </div>
                 {isSel&&(
                   <div style={{marginTop:4,display:"flex",flexDirection:"column",gap:3}} onClick={e=>e.stopPropagation()}>
+                    <label style={{display:"inline-flex",alignItems:"center",gap:5,color:"#00e676",fontSize:10,cursor:"pointer"}}>
+                      <input type="checkbox" checked={!!g.required} onChange={e=>onReassign("goal",g.id,"required",e.target.checked)}
+                        style={{width:12,height:12,accentColor:"#00e676",margin:0}}/>
+                      필요한 골 List에 포함
+                    </label>
                     <div style={{display:"flex",alignItems:"center",gap:4}}>
                       <span style={{fontSize:9,color:"rgba(255,102,128,0.5)",whiteSpace:"nowrap"}}>ID</span>
                       <CommitInput value={g.id} onCommit={next=>onRenameGoalId?.(g.id,next)}
@@ -1705,12 +1719,14 @@ function SlamModePanel({
   slamParamsFile,
   onChangeParamsFile,
   slamMapStats,
+  defaultMapDir,
   onPickGoalTool,
   onPickSelectTool,
   onOpenWorkspaceSync,
 }) {
   const mapOk=!!slamMapStats?.width;
   const rosStats=ros2Stats?.current||{};
+  const saveBaseName=cleanMapBaseName(slamSaveName)||"map_MMDD_HHMM";
   return (
     <div style={{width:300,background:"#071121",borderLeft:"1px solid rgba(0,212,255,0.12)",display:"flex",flexDirection:"column",flexShrink:0}}>
       <div style={{padding:"9px 14px",borderBottom:"1px solid rgba(0,212,255,0.12)",display:"flex",alignItems:"center",gap:8}}>
@@ -1811,9 +1827,12 @@ function SlamModePanel({
           <div style={{fontSize:10,color:mapOk?"#00e676":"#ff6680",letterSpacing:1}}>LIVE MAP</div>
           <label style={{display:"flex",flexDirection:"column",gap:4}}>
             <span style={{fontSize:10,color:"rgba(0,212,255,0.45)"}}>저장 이름</span>
-            <input value={slamSaveName} onChange={e=>onChangeSaveName(e.target.value)} placeholder="map_MMDD_HHMM"
+            <input value={slamSaveName} onChange={e=>onChangeSaveName(e.target.value)} placeholder="map_name"
               style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:11}}/>
           </label>
+          <div style={{fontSize:9,color:"rgba(0,212,255,0.32)",lineHeight:1.45,wordBreak:"break-all"}}>
+            기본 위치: {defaultMapDir}/{saveBaseName}.pgm
+          </div>
           {mapOk?(
             <>
               <div style={{fontSize:11,color:"#c9fffe"}}>{slamMapStats.width}×{slamMapStats.height} @ {slamMapStats.resolution}m/px</div>
@@ -1905,7 +1924,6 @@ export default function Nav2MapEditor() {
   const [rotation,    setRotation]    = useState(0); // degrees
   const [selectedStartTask,setSelectedStartTask]=useState(DEFAULT_START_TASK);
   const [startPoses,  setStartPoses]  = useState({});
-  const startPose = startPoses[selectedStartTask]||null;
   const [waypoints,   setWaypoints]   = useState([]);
   const [selWpIdx,    setSelWpIdx]    = useState(null);
   const [mapLoaded,   setMapLoaded]   = useState(false);
@@ -3308,12 +3326,17 @@ export default function Nav2MapEditor() {
           return{id,label:wp.label||id,x:p.x,y:p.y,theta:thetaFromSemanticPose(wp)};
         })
         .filter(Boolean);
+      const goalListIds=new Set([
+        ...(Array.isArray(data.goal_list)?data.goal_list:[]),
+        ...(Array.isArray(data.selected_goals)?data.selected_goals:[]),
+        ...(Array.isArray(data.required_goals)?data.required_goals:[]),
+      ].map(String));
       const nextGoals=(Array.isArray(data.goals)?data.goals:[])
         .map((g,i)=>{
           const p=getPosePoint(g);
           if(!p)return null;
           const id=String(g.id||`g${i+1}`);
-          return{id,label:g.label||id,x:p.x,y:p.y,theta:thetaFromSemanticPose(g),room_id:g.room_id||g.roomId||null,target_id:g.target_id||g.targetId||null};
+          return{id,label:g.label||id,x:p.x,y:p.y,theta:thetaFromSemanticPose(g),room_id:g.room_id||g.roomId||null,target_id:g.target_id||g.targetId||null,required:Boolean(g.required??g.in_list??g.selected??goalListIds.has(id))};
         })
         .filter(Boolean);
 
@@ -3544,30 +3567,6 @@ export default function Nav2MapEditor() {
     const w = pixelToWorld(px, py, meta.origin, meta.resolution, canvasSize.h);
     return { x: +w.x.toFixed(3), y: +w.y.toFixed(3) };
   },[meta,canvasSize.h]);
-
-  const publishInitialPose=useCallback(()=>{
-    if(!startPose){setStatus(`⚠ ${selectedStartTask} 시작점을 먼저 지정하세요`);return;}
-    if(ros2State!==ROS2_STATES.CONNECTED){setStatus("⚠ ROS2 연결 후 시작점을 전송할 수 있습니다");return;}
-    const pos=toWorld(startPose.x,startPose.y);
-    const qz=Math.sin(startPose.theta/2),qw=Math.cos(startPose.theta/2);
-    const now=Date.now();
-    const covariance=Array(36).fill(0);
-    covariance[0]=0.25;covariance[7]=0.25;covariance[35]=0.06853891945200942;
-    ros2Bridge.publish("/initialpose","geometry_msgs/msg/PoseWithCovarianceStamped",{
-      header:{
-        stamp:{sec:Math.floor(now/1000),nanosec:(now%1000)*1000000},
-        frame_id:ros2Frames.fixed||"map",
-      },
-      pose:{
-        pose:{
-          position:{x:+pos.x,y:+pos.y,z:0.0},
-          orientation:{x:0,y:0,z:+qz.toFixed(6),w:+qw.toFixed(6)},
-        },
-        covariance,
-      },
-    });
-    setStatus(`📡 ${selectedStartTask} 시작점 전송: (${pos.x}, ${pos.y})m · ${Math.round(startPose.theta*180/Math.PI)}°`);
-  },[startPose,selectedStartTask,ros2State,ros2Bridge,ros2Frames.fixed,toWorld]);
 
   const robotPoseToCanvas=useCallback(()=>{
     if(!mapLoaded){setStatus("⚠ 맵을 먼저 여세요");return null;}
@@ -3829,9 +3828,11 @@ export default function Nav2MapEditor() {
     const startPoseItems=START_TASKS
       .filter(task=>startPoses[task])
       .map(task=>({...poseJson(startPoses[task]),task,label:task}));
+    const goalList=goals.filter(g=>g.required).map(g=>g.id);
     return JSON.stringify({
       metadata:{resolution:meta.resolution,origin:meta.origin,image_size:{w:canvasSize.w,h:canvasSize.h},created:new Date().toISOString()},
       start_poses:startPoseItems,
+      goal_list:goalList,
       maps:maps.map(m=>{
         const poly=shapeToPoly(m)||[];
         const bb=poly.length?polyBBox(poly):{x:m.x,y:m.y,x2:m.x+(m.w||0),y2:m.y+(m.h||0)};
@@ -3876,7 +3877,7 @@ export default function Nav2MapEditor() {
       goals:goals.map(g=>{
         const pos=tw(g.x,g.y);
         const qz=Math.sin(g.theta/2),qw=Math.cos(g.theta/2);
-        return{id:g.id,label:g.label,room_id:g.room_id,target_id:g.target_id,
+        return{id:g.id,label:g.label,room_id:g.room_id,target_id:g.target_id,required:!!g.required,
           position:{x:+pos.x,y:+pos.y,z:0.0},
           orientation:{x:0,y:0,z:+qz.toFixed(5),w:+qw.toFixed(5)},
           theta_rad:+g.theta.toFixed(4),
@@ -3891,7 +3892,7 @@ export default function Nav2MapEditor() {
     if(hasHostAPI){
       const dirPath = await pickHostPath({
         dialogType:"save",
-        defaultPath: fallbackBase,
+        defaultPath: `${DEFAULT_MAP_SEARCH_DIR}/${fallbackBase}.pgm`,
         filters: [{ name: "PGM", extensions: ["pgm"] }],
       });
       if(!dirPath) return null;
@@ -3958,8 +3959,10 @@ export default function Nav2MapEditor() {
     if(!slamMapStats?.width){setStatus("⚠ 저장할 SLAM live map이 없습니다");return;}
     setSlamSaveBusy(true);
     try{
-      const saved=await saveMapBundle(cleanMapBaseName(slamSaveName)||timestampedMapName());
+      const requestedBase=cleanMapBaseName(slamSaveName)||timestampedMapName();
+      const saved=await saveMapBundle(requestedBase);
       if(!saved)return;
+      setSlamSaveName(saved.baseName||requestedBase);
       const stopped=[];
       if(nav2Running&&hostAPI?.nav2Stop){
         await hostAPI.nav2Stop();
@@ -4119,12 +4122,6 @@ export default function Nav2MapEditor() {
               <button style={{...btn(),opacity:rosbridgeBusy ? .45 : 1}} onClick={startRosbridge} disabled={rosbridgeBusy}>🌉 Bridge</button>
             )
           )}
-          <button
-            style={{...btn(),opacity:startPose&&ros2State===ROS2_STATES.CONNECTED?1:.4}}
-            onClick={publishInitialPose}
-            disabled={!startPose||ros2State!==ROS2_STATES.CONNECTED}
-            title="선택한 task의 시작점을 /initialpose로 publish해서 Nav2/AMCL 위치 추정 초기값을 설정합니다. 로봇 이동 명령은 아닙니다."
-          >📡 {selectedStartTask}→Nav2</button>
           {hasHostAPI&&(
             <>
               <button style={btn(!!bagPath)} onClick={chooseBagPath} title={bagPath||"ROS2 bag 폴더 선택"}>🎞 {bagPath?basenameFromPath(bagPath):"Bag"}</button>
@@ -4448,6 +4445,7 @@ export default function Nav2MapEditor() {
             slamParamsFile={slamParamsFile}
             onChangeParamsFile={setSlamParamsFile}
             slamMapStats={slamMapStats}
+            defaultMapDir={DEFAULT_MAP_SEARCH_DIR}
             onPickGoalTool={()=>{setActiveTab("semantic");setTool("semGoal");setShowSemPanel(true);}}
             onPickSelectTool={()=>{setActiveTab("semantic");setTool("semSelect");setShowSemPanel(true);}}
             onOpenWorkspaceSync={()=>setShowWorkspaceDlg(true)}
