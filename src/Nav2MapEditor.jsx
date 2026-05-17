@@ -325,8 +325,25 @@ function buildObjectTypes(catalog){
   });
   return mergeById(objs,[OBJECT_TYPES[OBJECT_TYPES.length-1]]);
 }
-function mergeSemanticCatalog(current,next){
-  const roomSet=new Set([...(current.rooms||[]),...(next.rooms||[])]);
+function normalizeRoomNames(rooms,fallback=DEFAULT_SEMANTIC_CATALOG.rooms){
+  const out=[];
+  const seen=new Set();
+  (rooms||[]).forEach(room=>{
+    const name=String(room||"").trim();
+    const id=catalogId(name);
+    if(!name||seen.has(id))return;
+    seen.add(id);
+    out.push(name);
+  });
+  if(out.length||fallback==null)return out;
+  return normalizeRoomNames(fallback,null);
+}
+function catalogRoomNames(sources){
+  return normalizeRoomNames((sources||[]).flatMap(src=>src?.catalog?.rooms||[]),null);
+}
+function mergeSemanticCatalog(current,next,{rooms=false}={}){
+  const roomSet=new Set(current.rooms||[]);
+  if(rooms)(next.rooms||[]).forEach(r=>roomSet.add(r));
   const locMap=new Map((current.locations||[]).map(x=>[catalogId(x.label),x]));
   (next.locations||[]).forEach(x=>locMap.set(catalogId(x.label),x));
   const classMap=new Map((current.objectClasses||[]).map(x=>[catalogId(x.label),{...x,objects:[...(x.objects||[])]}]));
@@ -344,7 +361,7 @@ function catalogSourceId(){
 }
 function defaultSemanticCatalog(){
   return {
-    rooms:[...DEFAULT_SEMANTIC_CATALOG.rooms],
+    rooms:normalizeRoomNames(DEFAULT_SEMANTIC_CATALOG.rooms),
     locations:[],
     objectClasses:[],
   };
@@ -357,8 +374,9 @@ function catalogCounts(catalog){
     objects:(catalog?.objectClasses||[]).reduce((n,c)=>n+(c.objects?.length||0),0),
   };
 }
-function composeSemanticCatalog(sources){
-  return (sources||[]).reduce((acc,src)=>mergeSemanticCatalog(acc,src.catalog||defaultSemanticCatalog()),defaultSemanticCatalog());
+function composeSemanticCatalog(sources,rooms=DEFAULT_SEMANTIC_CATALOG.rooms){
+  const base={rooms:normalizeRoomNames(rooms),locations:[],objectClasses:[]};
+  return (sources||[]).reduce((acc,src)=>mergeSemanticCatalog(acc,src.catalog||{}),base);
 }
 
 // ─── Geometry helpers ──────────────────────────────────────────────────────────
@@ -1137,7 +1155,7 @@ function RobotFileBrowser({api,request,onClose}){
 }
 
 // ─── Markdown catalog management panel ───────────────────────────────────────
-function CatalogPanel({catalog,sources,hasHostAPI,onImport,onFileImport,onRemoveSource,onReset,onAddRoom}) {
+function CatalogPanel({catalog,sources,hasHostAPI,onImport,onFileImport,onRemoveSource,onReset,onAddRoom,onUpdateRoom,onDeleteRoom,onResetRooms}) {
   const [view,setView]=useState("sources");
   const [roomName,setRoomName]=useState("");
   const counts=catalogCounts(catalog);
@@ -1175,8 +1193,8 @@ function CatalogPanel({catalog,sources,hasHostAPI,onImport,onFileImport,onRemove
           <div style={{display:"flex",flexDirection:"column",gap:6}}>
             {sources.length===0&&(
               <div style={{color:"rgba(0,212,255,0.24)",textAlign:"center",padding:"20px 8px",lineHeight:1.9,fontSize:11}}>
-                기본 Rooms 사용 중<br/>
-                <span style={{fontSize:10,opacity:.7}}>kitchen · living room · bedroom · laundry room</span>
+                Rooms 직접 관리 중<br/>
+                <span style={{fontSize:10,opacity:.7}}>{(catalog.rooms||[]).slice(0,4).join(" · ")}{(catalog.rooms||[]).length>4?" · ...":""}</span>
               </div>
             )}
             {sources.map(src=>{
@@ -1203,12 +1221,15 @@ function CatalogPanel({catalog,sources,hasHostAPI,onImport,onFileImport,onRemove
               <input value={roomName} onChange={e=>setRoomName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addRoom();}} placeholder="room name"
                 style={{...INPUT,flex:1,minWidth:0,padding:"4px 7px",fontSize:11}}/>
               <button style={{...btn(true),fontSize:11,padding:"4px 8px"}} onClick={addRoom}>추가</button>
+              <button style={{...btn(),fontSize:11,padding:"4px 8px"}} onClick={onResetRooms}>기본값</button>
             </div>
             <div style={{display:"flex",flexDirection:"column",gap:4}}>
               {(catalog.rooms||[]).map((room,i)=>(
                 <div key={`${room}-${i}`} style={{display:"flex",alignItems:"center",gap:7,padding:"5px 8px",borderRadius:5,background:"rgba(255,255,255,0.025)",border:"1px solid rgba(0,212,255,0.06)"}}>
                   <span style={{width:10,height:10,borderRadius:2,background:CATALOG_COLORS[i%CATALOG_COLORS.length],opacity:.85}}/>
-                  <span style={{color:"#c9fffe",fontSize:11,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{room}</span>
+                  <CommitInput value={room} onCommit={next=>onUpdateRoom?.(i,next)}
+                    style={{...INPUT,flex:1,minWidth:0,padding:"3px 6px",fontSize:10}}/>
+                  <button style={{...btn(false,true),padding:"1px 4px",fontSize:9}} onClick={()=>onDeleteRoom?.(i)}>✕</button>
                 </div>
               ))}
             </div>
@@ -2050,8 +2071,9 @@ export default function Nav2MapEditor() {
   const [showSemPanel,setShowSemPanel]= useState(false);
   const [showCatalogPanel,setShowCatalogPanel]= useState(false);
   const [semOpacity,  setSemOpacity]  = useState(0.8);
+  const [catalogRooms,setCatalogRooms]=useState(()=>normalizeRoomNames(DEFAULT_SEMANTIC_CATALOG.rooms));
   const [catalogSources,setCatalogSources]=useState([]);
-  const semanticCatalog=useMemo(()=>composeSemanticCatalog(catalogSources),[catalogSources]);
+  const semanticCatalog=useMemo(()=>composeSemanticCatalog(catalogSources,catalogRooms),[catalogSources,catalogRooms]);
   const typeOptions=useMemo(()=>({
     maps:MAP_TYPES,
     rooms:buildRoomTypes(semanticCatalog),
@@ -3166,7 +3188,7 @@ export default function Nav2MapEditor() {
       setStatus(`📦 캐리어 추가: ${label}${parentRoom?` (${parentRoom.label} 내)`:""}`);
     } else {
       const ot=typeOptions.objects.find(t=>t.id===type)||typeOptions.objects[typeOptions.objects.length-1];
-      const isPoint=point||ot.point;
+      const isPoint=!!point;
       const newObj=isPoint
         ?{id:ouid(),type,label,color:ot.color,point:true,x:pt?pt.x:poly?polyCentroid(poly).x:rect.x+rect.w/2,y:pt?pt.y:poly?polyCentroid(poly).y:rect.y+rect.h/2}
         :poly
@@ -3345,6 +3367,11 @@ export default function Nav2MapEditor() {
       const data=typeof text==="string"?JSON.parse(text):text;
       if(!data||typeof data!=="object")throw new Error("JSON 객체가 아닙니다");
       const semMeta=data.metadata||{};
+      const loadedRooms=normalizeRoomNames(
+        semMeta?.semantic_catalog?.rooms||data?.semantic_catalog?.rooms||semMeta?.room_catalog||data?.room_catalog,
+        null
+      );
+      if(loadedRooms.length)setCatalogRooms(loadedRooms);
       const canvas=canvasRef.current;
       const currentSize=options.canvasSize||(canvas&&canvas.width&&canvas.height?{w:canvas.width,h:canvas.height}:canvasSize);
       const semSize=semanticImageSize(semMeta);
@@ -3425,8 +3452,9 @@ export default function Nav2MapEditor() {
       const nextMaps=(Array.isArray(data.maps)?data.maps:[])
         .map((m,i)=>importArea(m,i,typeOptions.maps,"m","map"))
         .filter(Boolean);
+      const importRoomTypes=loadedRooms.length?buildRoomTypes({rooms:loadedRooms}):typeOptions.rooms;
       const nextRooms=(Array.isArray(data.rooms)?data.rooms:[])
-        .map((r,i)=>importArea(r,i,typeOptions.rooms,"r","custom",{mapId:r?.mapId||r?.map_id||null}))
+        .map((r,i)=>importArea(r,i,importRoomTypes,"r","custom",{mapId:r?.mapId||r?.map_id||null}))
         .filter(Boolean);
       const nextCarriers=(Array.isArray(data.carriers)?data.carriers:[])
         .map((c,i)=>importArea(c,i,typeOptions.carriers,"c","custom",{roomId:c?.roomId||c?.room_id||null,z:finiteNumber(c?.z??c?.z_m??c?.height,0)}))
@@ -3599,45 +3627,83 @@ export default function Nav2MapEditor() {
     setCatalogSources(prev=>{
       const incomingKeys=new Set(incoming.map(src=>src.path||src.name));
       const next=[...prev.filter(src=>!incomingKeys.has(src.path||src.name)),...incoming];
-      const merged=composeSemanticCatalog(next);
+      const sourceRooms=catalogRoomNames(next);
+      const nextRooms=sourceRooms.length?sourceRooms:catalogRooms;
+      if(sourceRooms.length)setCatalogRooms(nextRooms);
+      const merged=composeSemanticCatalog(next,nextRooms);
       const counts=catalogCounts(merged);
       setStatus(`✅ MD 목록 갱신: 파일 ${incoming.length} · 방 ${counts.rooms} · 위치 ${counts.locations} · 객체 ${counts.objects}`);
       return next;
     });
     setShowCatalogPanel(true);
     setActiveTab("semantic");
-  },[]);
+  },[catalogRooms]);
 
   const removeCatalogSource=useCallback((id)=>{
     setCatalogSources(prev=>{
       const next=prev.filter(src=>src.id!==id);
-      const counts=catalogCounts(composeSemanticCatalog(next));
+      const sourceRooms=catalogRoomNames(next);
+      const nextRooms=sourceRooms.length?sourceRooms:catalogRooms;
+      if(sourceRooms.length)setCatalogRooms(nextRooms);
+      const counts=catalogCounts(composeSemanticCatalog(next,nextRooms));
       setStatus(`📋 MD 목록 갱신: 방 ${counts.rooms} · 위치 ${counts.locations} · 객체 ${counts.objects}`);
       return next;
     });
-  },[]);
+  },[catalogRooms]);
 
   const resetCatalogSources=useCallback(()=>{
     setCatalogSources([]);
-    const counts=catalogCounts(defaultSemanticCatalog());
+    const defaultRooms=normalizeRoomNames(DEFAULT_SEMANTIC_CATALOG.rooms);
+    setCatalogRooms(defaultRooms);
+    const counts=catalogCounts(composeSemanticCatalog([],defaultRooms));
     setStatus(`📋 MD 목록 초기화: 방 ${counts.rooms} · 위치 ${counts.locations} · 객체 ${counts.objects}`);
   },[]);
 
   const addCatalogRoom=useCallback((name)=>{
     const room=String(name||"").trim();
     if(!room)return;
-    setCatalogSources(prev=>{
-      const current=composeSemanticCatalog(prev);
-      if((current.rooms||[]).some(r=>catalogId(r)===catalogId(room))){
+    setCatalogRooms(prev=>{
+      if((prev||[]).some(r=>catalogId(r)===catalogId(room))){
         setStatus(`⚠ 이미 있는 Room: ${room}`);
         return prev;
       }
-      const catalog={rooms:[room],locations:[],objectClasses:[]};
-      const next=[...prev,{id:catalogSourceId(),kind:"manual",name:`room: ${room}`,path:"",catalog,counts:catalogCounts(catalog)}];
-      const counts=catalogCounts(composeSemanticCatalog(next));
-      setStatus(`✅ Room 추가: ${room} · 방 ${counts.rooms}`);
+      const next=normalizeRoomNames([...(prev||[]),room]);
+      setStatus(`✅ Room 추가: ${room} · 방 ${next.length}`);
       return next;
     });
+  },[]);
+
+  const updateCatalogRoom=useCallback((index,name)=>{
+    const room=String(name||"").trim();
+    if(!room)return false;
+    if(index<0||index>=catalogRooms.length)return false;
+    if(catalogRooms.some((r,i)=>i!==index&&catalogId(r)===catalogId(room))){
+      setStatus(`⚠ 이미 있는 Room: ${room}`);
+      return false;
+    }
+    setCatalogRooms(prev=>prev.map((r,i)=>i===index?room:r));
+    setStatus(`✎ Room 수정: ${room}`);
+    return true;
+  },[catalogRooms]);
+
+  const deleteCatalogRoom=useCallback((index)=>{
+    setCatalogRooms(prev=>{
+      if(prev.length<=1){
+        setStatus("⚠ Room은 최소 1개가 필요합니다");
+        return prev;
+      }
+      if(index<0||index>=prev.length)return prev;
+      const removed=prev[index];
+      const next=prev.filter((_,i)=>i!==index);
+      setStatus(`🗑 Room 삭제: ${removed} · 방 ${next.length}`);
+      return next;
+    });
+  },[]);
+
+  const resetCatalogRooms=useCallback(()=>{
+    const next=normalizeRoomNames(DEFAULT_SEMANTIC_CATALOG.rooms);
+    setCatalogRooms(next);
+    setStatus(`📋 Room 기본값 복구: 방 ${next.length}`);
   },[]);
 
   const handleCatalogOpen=useCallback(async()=>{
@@ -4090,7 +4156,13 @@ export default function Nav2MapEditor() {
       .filter(task=>startPoses[task])
       .map(task=>({...poseJson(startPoses[task]),task,label:task}));
     return JSON.stringify({
-      metadata:{resolution:meta.resolution,origin:meta.origin,image_size:{w:canvasSize.w,h:canvasSize.h},created:new Date().toISOString()},
+      metadata:{
+        resolution:meta.resolution,
+        origin:meta.origin,
+        image_size:{w:canvasSize.w,h:canvasSize.h},
+        semantic_catalog:{rooms:catalogRooms},
+        created:new Date().toISOString()
+      },
       start_poses:startPoseItems,
       maps:maps.map(m=>{
         const poly=shapeToPoly(m)||[];
@@ -4143,7 +4215,7 @@ export default function Nav2MapEditor() {
           _pixel:{x:g.x,y:g.y}};
       })
     },null,2);
-  },[maps,rooms,carriers,objects,startPoses,waypoints,goals,meta,canvasSize,toWorld]);
+  },[maps,rooms,carriers,objects,startPoses,waypoints,goals,meta,canvasSize,toWorld,catalogRooms]);
 
   const saveMapBundle=useCallback(async(defaultBase=meta.filename)=>{
     const c=canvasRef.current;if(!c)return null;
@@ -4662,6 +4734,9 @@ export default function Nav2MapEditor() {
             onRemoveSource={removeCatalogSource}
             onReset={resetCatalogSources}
             onAddRoom={addCatalogRoom}
+            onUpdateRoom={updateCatalogRoom}
+            onDeleteRoom={deleteCatalogRoom}
+            onResetRooms={resetCatalogRooms}
           />
         )}
 
