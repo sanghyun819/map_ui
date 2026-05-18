@@ -617,6 +617,12 @@ function maxIdNumber(prefix,items){
   });
   return max;
 }
+function compareSemanticIds(a,b){
+  const aid=String(a?.id||""),bid=String(b?.id||"");
+  const am=aid.match(/^([a-z]+)(\d+)$/i),bm=bid.match(/^([a-z]+)(\d+)$/i);
+  if(am&&bm&&am[1]===bm[1])return Number(am[2])-Number(bm[2]);
+  return aid.localeCompare(bid,undefined,{numeric:true,sensitivity:"base"});
+}
 function syncSemanticCounters(next){
   _mIdx=maxIdNumber("m",next.maps);
   _rIdx=maxIdNumber("r",next.rooms);
@@ -799,8 +805,10 @@ function SemanticDialog({mode, typeOptions, onConfirm, onCancel}) {
   const typesList = mode==="map" ? typeOptions.maps : mode==="room" ? typeOptions.rooms : mode==="carrier" ? typeOptions.carriers : typeOptions.objects;
   const [type,setType]=useState(typesList[0].id);
   const [label,setLabel]=useState("");
+  const [objectId,setObjectId]=useState("");
   const selT=typesList.find(t=>t.id===type);
   const title = mode==="map" ? "🗺 맵 영역 추가" : mode==="room" ? "🏠 방/영역 추가" : mode==="carrier" ? "📦 캐리어 추가" : "🔹 오브젝트 추가";
+  const confirm=()=>onConfirm(type,label||selT?.label,mode==="object"?objectId:"");
   return(
     <div style={MODAL}>
       <div style={{...MBOX,minWidth:400}}>
@@ -825,9 +833,17 @@ function SemanticDialog({mode, typeOptions, onConfirm, onCancel}) {
         <div style={{marginBottom:18}}>
           <div style={{fontSize:10,color:"rgba(0,212,255,0.5)",marginBottom:6,letterSpacing:1}}>라벨</div>
           <input autoFocus placeholder={selT?.label} value={label} onChange={e=>setLabel(e.target.value)}
-            onKeyDown={e=>e.key==="Enter"&&onConfirm(type,label||selT?.label)}
+            onKeyDown={e=>e.key==="Enter"&&confirm()}
             style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:13}}/>
         </div>
+        {mode==="object"&&(
+          <div style={{marginBottom:18}}>
+            <div style={{fontSize:10,color:"rgba(0,212,255,0.5)",marginBottom:6,letterSpacing:1}}>오브젝트 ID (선택)</div>
+            <input placeholder="비워두면 자동 ID" value={objectId} onChange={e=>setObjectId(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&confirm()}
+              style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:13}}/>
+          </div>
+        )}
         <div style={{padding:"7px 12px",background:"rgba(0,0,0,0.3)",borderRadius:5,marginBottom:16,display:"flex",alignItems:"center",gap:8}}>
           <div style={{width:13,height:13,borderRadius:3,background:selT?.color,opacity:0.8}}/>
           <span style={{fontSize:10,color:"rgba(0,212,255,0.45)"}}>{selT?.label} — {selT?.color}</span>
@@ -835,7 +851,7 @@ function SemanticDialog({mode, typeOptions, onConfirm, onCancel}) {
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
           <button style={btn()} onClick={onCancel}>취소</button>
           <button style={{...btn(true),borderColor:selT?.color||"#00d4ff",color:selT?.color||"#00d4ff"}}
-            onClick={()=>onConfirm(type,label||selT?.label)}>
+            onClick={confirm}>
             {selT?.icon} 추가
           </button>
         </div>
@@ -1170,18 +1186,33 @@ function RobotFileBrowser({api,request,onClose}){
 }
 
 // ─── Markdown catalog management panel ───────────────────────────────────────
-function CatalogPanel({catalog,sources,placedRooms,placedCarriers,placedObjects,hasHostAPI,onImport,onFileImport,onRemoveSource,onReset,onAddRoom,onUpdateRoom,onDeleteRoom,onResetRooms}) {
+function CatalogPanel({catalog,sources,placedRooms,placedCarriers,placedObjects,hasHostAPI,onImport,onFileImport,onRemoveSource,onReset,onAddRoom,onUpdateRoom,onDeleteRoom,onResetRooms,onSelectPlaced}) {
   const [view,setView]=useState("sources");
   const [roomName,setRoomName]=useState("");
+  const [pickIndexByKey,setPickIndexByKey]=useState({});
   const counts=catalogCounts(catalog);
-  const isRoomPlaced=(room)=>{const id=catalogId(room);return (placedRooms||[]).some(r=>catalogId(r.type)===id||catalogId(r.label)===id);};
-  const isLocationPlaced=(loc)=>{const id=catalogId(loc?.label);return (placedCarriers||[]).some(c=>catalogId(c.type)===id||catalogId(c.label)===id);};
-  const isObjectPlaced=(obj)=>{const id=catalogId(obj?.name);return (placedObjects||[]).some(o=>catalogId(o.type)===id||catalogId(o.label)===id);};
-  const mark=(done)=>(
-    <span title={done?"지도에 지정됨":"미지정"} style={{
-      width:16,textAlign:"center",fontSize:10,fontWeight:"bold",
-      color:done?"#00e676":"rgba(0,212,255,0.24)",
-    }}>{done?"O":"-"}</span>
+  const matchRooms=(room)=>{const id=catalogId(room);return (placedRooms||[]).filter(r=>catalogId(r.type)===id||catalogId(r.label)===id).sort(compareSemanticIds);};
+  const matchLocations=(loc)=>{const id=catalogId(loc?.label);return (placedCarriers||[]).filter(c=>catalogId(c.type)===id||catalogId(c.label)===id).sort(compareSemanticIds);};
+  const matchObjects=(obj)=>{const id=catalogId(obj?.name);return (placedObjects||[]).filter(o=>catalogId(o.type)===id||catalogId(o.label)===id).sort(compareSemanticIds);};
+  const placedRowStyle=(matches,color="#00e676")=>{
+    const first=matches?.[0];
+    return first?{
+    background:hexRgba(first.color||color,.12),
+    border:`1px solid ${hexRgba(first.color||color,.38)}`,
+    cursor:"pointer",
+  }:{background:"rgba(255,255,255,0.025)",border:"1px solid rgba(0,212,255,0.06)"};
+  };
+  const selectPlaced=(key,matches)=>{
+    if(!matches?.length)return;
+    const idx=pickIndexByKey[key]||0;
+    onSelectPlaced?.(matches[idx%matches.length]);
+    setPickIndexByKey(p=>({...p,[key]:(idx+1)%matches.length}));
+  };
+  const countBadge=(count)=>(
+    <span title={count?`지도에 ${count}개 지정됨`:"미지정"} style={{
+      minWidth:18,textAlign:"center",fontSize:10,fontWeight:"bold",
+      color:count?"#00e676":"rgba(0,212,255,0.24)",
+    }}>{count||"-"}</span>
   );
   const addRoom=()=>{
     const name=roomName.trim();
@@ -1248,15 +1279,20 @@ function CatalogPanel({catalog,sources,placedRooms,placedCarriers,placedObjects,
               <button style={{...btn(),fontSize:11,padding:"4px 8px"}} onClick={onResetRooms}>기본값</button>
             </div>
             <div style={{display:"flex",flexDirection:"column",gap:4}}>
-              {(catalog.rooms||[]).map((room,i)=>(
-                <div key={`${room}-${i}`} style={{display:"flex",alignItems:"center",gap:7,padding:"5px 8px",borderRadius:5,background:"rgba(255,255,255,0.025)",border:"1px solid rgba(0,212,255,0.06)"}}>
-                  <span style={{width:10,height:10,borderRadius:2,background:CATALOG_COLORS[i%CATALOG_COLORS.length],opacity:.85}}/>
-                  {mark(isRoomPlaced(room))}
+              {(catalog.rooms||[]).map((room,i)=>{
+                const matches=matchRooms(room);
+                const first=matches[0];
+                const key=`room:${catalogId(room)}`;
+                return(
+                <div key={`${room}-${i}`} onClick={()=>selectPlaced(key,matches)} style={{display:"flex",alignItems:"center",gap:7,padding:"5px 8px",borderRadius:5,...placedRowStyle(matches,CATALOG_COLORS[i%CATALOG_COLORS.length])}}>
+                  <span style={{width:10,height:10,borderRadius:2,background:first?.color||CATALOG_COLORS[i%CATALOG_COLORS.length],opacity:.85}}/>
+                  {countBadge(matches.length)}
                   <CommitInput value={room} onCommit={next=>onUpdateRoom?.(i,next)}
                     style={{...INPUT,flex:1,minWidth:0,padding:"3px 6px",fontSize:10}}/>
-                  <button style={{...btn(false,true),padding:"1px 4px",fontSize:9}} onClick={()=>onDeleteRoom?.(i)}>✕</button>
+                  <button style={{...btn(false,true),padding:"1px 4px",fontSize:9}} onClick={e=>{e.stopPropagation();onDeleteRoom?.(i);}}>✕</button>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -1266,17 +1302,21 @@ function CatalogPanel({catalog,sources,placedRooms,placedCarriers,placedObjects,
             {(catalog.locations||[]).length===0&&(
               <div style={{color:"rgba(0,212,255,0.24)",textAlign:"center",padding:"22px 8px",fontSize:11}}>Locations 없음</div>
             )}
-            {(catalog.locations||[]).map((loc,i)=>(
-              <div key={`${loc.number||i}-${loc.label}`} style={{padding:"6px 8px",borderRadius:5,background:"rgba(255,255,255,0.025)",border:"1px solid rgba(0,212,255,0.06)"}}>
+            {(catalog.locations||[]).map((loc,i)=>{
+              const matches=matchLocations(loc);
+              const key=`location:${catalogId(loc?.label)}`;
+              return(
+              <div key={`${loc.number||i}-${loc.label}`} onClick={()=>selectPlaced(key,matches)} style={{padding:"6px 8px",borderRadius:5,...placedRowStyle(matches,CATALOG_COLORS[i%CATALOG_COLORS.length])}}>
                 <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                  {mark(isLocationPlaced(loc))}
+                  {countBadge(matches.length)}
                   <span style={{color:"rgba(0,212,255,0.45)",fontSize:10,width:22}}>{loc.number||"-"}</span>
                   <span style={{color:"#c9fffe",fontSize:11,fontWeight:"bold",flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{loc.label}</span>
                   {loc.placeable&&<span style={{color:"#00e676",fontSize:9}}>(p)</span>}
                 </div>
                 {loc.objectCategory&&<div style={{color:"rgba(0,212,255,0.35)",fontSize:9,marginTop:2,paddingLeft:28}}>{loc.objectCategory}</div>}
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -1294,16 +1334,22 @@ function CatalogPanel({catalog,sources,placedRooms,placedCarriers,placedObjects,
                   <span style={{marginLeft:"auto",color:"rgba(0,212,255,0.35)",fontSize:9}}>{cls.objects?.length||0}</span>
                 </div>
                 <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
-                  {(cls.objects||[]).map(obj=>(
-                    <span key={obj.name} title={`${isObjectPlaced(obj)?"지도에 지정됨":"미지정"} · ${obj.image||obj.name}`} style={{
+                  {(cls.objects||[]).map(obj=>{
+                    const matches=matchObjects(obj);
+                    const first=matches[0];
+                    const key=`object:${catalogId(obj?.name)}`;
+                    return(
+                    <span key={obj.name} onClick={()=>selectPlaced(key,matches)} title={`${matches.length?`지도에 ${matches.length}개 지정됨`:"미지정"} · ${obj.image||obj.name}`} style={{
                       padding:"2px 5px",borderRadius:4,
-                      background:isObjectPlaced(obj)?"rgba(0,230,118,0.08)":"rgba(0,212,255,0.06)",
-                      border:`1px solid ${isObjectPlaced(obj)?"rgba(0,230,118,0.22)":"rgba(0,212,255,0.08)"}`,
-                      color:isObjectPlaced(obj)?"rgba(184,255,216,0.9)":"rgba(201,255,254,0.82)",fontSize:9,
+                      background:first?hexRgba(first.color||"#00e676",.12):"rgba(0,212,255,0.06)",
+                      border:`1px solid ${first?hexRgba(first.color||"#00e676",.36):"rgba(0,212,255,0.08)"}`,
+                      color:first?"rgba(184,255,216,0.9)":"rgba(201,255,254,0.82)",fontSize:9,
+                      cursor:first?"pointer":"default",
                     }}>
-                      <span style={{fontWeight:"bold",marginRight:4,color:isObjectPlaced(obj)?"#00e676":"rgba(0,212,255,0.28)"}}>{isObjectPlaced(obj)?"O":"-"}</span>{obj.name}
+                      <span style={{fontWeight:"bold",marginRight:4,color:first?"#00e676":"rgba(0,212,255,0.28)"}}>{matches.length||"-"}</span>{obj.name}
                     </span>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             ))}
@@ -1361,6 +1407,31 @@ function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,go
       {actions&&<div onClick={e=>e.stopPropagation()} style={{display:"flex",alignItems:"center",gap:4,marginLeft:"auto"}}>{actions}</div>}
     </div>
   );
+
+  useEffect(()=>{
+    if(!selId)return;
+    const next={};
+    const openRoom=(roomId)=>{
+      if(!roomId)return;
+      next[roomId]=true;
+      const room=rooms.find(r=>r.id===roomId);
+      if(room?.mapId)next[room.mapId]=true;
+    };
+    const openCarrier=(carrierId)=>{
+      if(!carrierId)return;
+      next[carrierId]=true;
+      const carrier=carriers.find(c=>c.id===carrierId);
+      if(carrier?.roomId)openRoom(carrier.roomId);
+    };
+    const room=rooms.find(r=>r.id===selId);
+    if(room?.mapId)next[room.mapId]=true;
+    const carrier=carriers.find(c=>c.id===selId);
+    if(carrier?.roomId)openRoom(carrier.roomId);
+    const obj=objects.find(o=>o.id===selId);
+    if(obj?.carrierId)openCarrier(obj.carrierId);
+    else if(obj?.roomId)openRoom(obj.roomId);
+    if(Object.keys(next).length)setExpanded(prev=>({...prev,...next}));
+  },[selId,maps,rooms,carriers,objects]);
 
   const insidePoly=(poly,obj)=>{
     if(!poly)return false;
@@ -3180,7 +3251,7 @@ export default function Nav2MapEditor() {
   },[startDlg,maps,rooms,carriers,objects,goals,waypoints,startPoses,setStartPoseForTask,saveSnap]);
 
   // ── Semantic confirm ──
-  const onSemConfirm=useCallback((type,label)=>{
+  const onSemConfirm=useCallback((type,label,requestedId="")=>{
     if(!semDlg)return;
     const {mode,rect,poly,point,pt}=semDlg;
 
@@ -3222,11 +3293,24 @@ export default function Nav2MapEditor() {
     } else {
       const ot=typeOptions.objects.find(t=>t.id===type)||typeOptions.objects[typeOptions.objects.length-1];
       const isPoint=!!point;
+      const objectId=String(requestedId||"").trim();
+      const usedIds=[
+        ...maps.map(m=>m.id),...rooms.map(r=>r.id),...carriers.map(c=>c.id),...objects.map(o=>o.id),
+        ...goals.map(g=>g.id),...waypoints.map((wp,i)=>wp.id||`w${i+1}`),
+        ...Object.values(startPoses).map(p=>p?.id).filter(Boolean),
+      ];
+      if(objectId&&usedIds.includes(objectId)){
+        setStatus(`⚠ 이미 있는 ID: ${objectId}`);
+        return false;
+      }
+      const idMatch=objectId.match(/^o(\d+)$/);
+      if(idMatch)_oIdx=Math.max(_oIdx,Number(idMatch[1]));
+      const id=objectId||ouid();
       const newObj=isPoint
-        ?{id:ouid(),type,label,color:ot.color,point:true,x:pt?pt.x:poly?polyCentroid(poly).x:rect.x+rect.w/2,y:pt?pt.y:poly?polyCentroid(poly).y:rect.y+rect.h/2}
+        ?{id,type,label,color:ot.color,point:true,x:pt?pt.x:poly?polyCentroid(poly).x:rect.x+rect.w/2,y:pt?pt.y:poly?polyCentroid(poly).y:rect.y+rect.h/2}
         :poly
-          ?{id:ouid(),type,label,color:ot.color,poly}
-          :{id:ouid(),type,label,color:ot.color,...rect};
+          ?{id,type,label,color:ot.color,poly}
+          :{id,type,label,color:ot.color,...rect};
       // Auto carrier assignment first, then room (80% overlap)
       const shape=shapeToPoly(newObj)||[];
       const parentCarrier=carriers.find(c=>{
@@ -3240,10 +3324,11 @@ export default function Nav2MapEditor() {
       });
       if(parentRoom)newObj.roomId=parentRoom.id;
       setObjects(p=>[...p,newObj]);setSelSemId(newObj.id);
-      setStatus(`🔹 객체 추가: ${label}${parentCarrier?` (${parentCarrier.label} 위)`:parentRoom?` (${parentRoom.label} 내)`:""}`);
+      setStatus(`🔹 객체 추가: ${label} (${newObj.id})${parentCarrier?` · ${parentCarrier.label} 위`:parentRoom?` · ${parentRoom.label} 내`:""}`);
     }
     setSemDlg(null);
-  },[semDlg,maps,rooms,carriers,typeOptions]);
+    return true;
+  },[semDlg,maps,rooms,carriers,objects,goals,waypoints,startPoses,typeOptions]);
 
   // ── Goal confirm (update goal placed by drag with target + label) ──
   const onGoalConfirm=useCallback((targetId,label,goalIdOverride=null,goalListItemId=null)=>{
@@ -4773,6 +4858,13 @@ export default function Nav2MapEditor() {
             onUpdateRoom={updateCatalogRoom}
             onDeleteRoom={deleteCatalogRoom}
             onResetRooms={resetCatalogRooms}
+            onSelectPlaced={item=>{
+              if(!item)return;
+              setSelSemId(item.id);
+              setSelWpIdx(null);
+              setShowSemPanel(true);
+              setStatus(`✅ 시맨틱 선택: ${item.label||item.id}`);
+            }}
           />
         )}
 
