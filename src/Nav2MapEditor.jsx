@@ -408,11 +408,26 @@ function shapeToPoly(shape) {
   if (!shape.point && shape.w != null) return rectToPoly(shape.x,shape.y,shape.w,shape.h);
   return null;
 }
+function pointSegmentDistance(px,py,a,b){
+  const vx=b.x-a.x,vy=b.y-a.y,wx=px-a.x,wy=py-a.y;
+  const len2=vx*vx+vy*vy;
+  const t=len2?Math.max(0,Math.min(1,(wx*vx+wy*vy)/len2)):0;
+  const x=a.x+t*vx,y=a.y+t*vy;
+  return Math.hypot(px-x,py-y);
+}
+function pointNearPolyEdge(poly,px,py,tolerance=4){
+  if(!poly||poly.length<2)return false;
+  for(let i=0;i<poly.length;i++){
+    const a=poly[i],b=poly[(i+1)%poly.length];
+    if(pointSegmentDistance(px,py,a,b)<=tolerance)return true;
+  }
+  return false;
+}
 function hitTestShape(shape, px, py) {
   if (shape.point) return Math.hypot(shape.x-px, shape.y-py) < 10;
   const poly = shapeToPoly(shape);
   if (!poly) return false;
-  return pointInPoly(px, py, poly);
+  return pointInPoly(px, py, poly)||pointNearPolyEdge(poly,px,py);
 }
 
 // Check if child polygon is mostly (>=threshold) inside parent polygon
@@ -1155,10 +1170,19 @@ function RobotFileBrowser({api,request,onClose}){
 }
 
 // ─── Markdown catalog management panel ───────────────────────────────────────
-function CatalogPanel({catalog,sources,hasHostAPI,onImport,onFileImport,onRemoveSource,onReset,onAddRoom,onUpdateRoom,onDeleteRoom,onResetRooms}) {
+function CatalogPanel({catalog,sources,placedRooms,placedCarriers,placedObjects,hasHostAPI,onImport,onFileImport,onRemoveSource,onReset,onAddRoom,onUpdateRoom,onDeleteRoom,onResetRooms}) {
   const [view,setView]=useState("sources");
   const [roomName,setRoomName]=useState("");
   const counts=catalogCounts(catalog);
+  const isRoomPlaced=(room)=>{const id=catalogId(room);return (placedRooms||[]).some(r=>catalogId(r.type)===id||catalogId(r.label)===id);};
+  const isLocationPlaced=(loc)=>{const id=catalogId(loc?.label);return (placedCarriers||[]).some(c=>catalogId(c.type)===id||catalogId(c.label)===id);};
+  const isObjectPlaced=(obj)=>{const id=catalogId(obj?.name);return (placedObjects||[]).some(o=>catalogId(o.type)===id||catalogId(o.label)===id);};
+  const mark=(done)=>(
+    <span title={done?"지도에 지정됨":"미지정"} style={{
+      width:16,textAlign:"center",fontSize:10,fontWeight:"bold",
+      color:done?"#00e676":"rgba(0,212,255,0.24)",
+    }}>{done?"O":"-"}</span>
+  );
   const addRoom=()=>{
     const name=roomName.trim();
     if(!name)return;
@@ -1227,6 +1251,7 @@ function CatalogPanel({catalog,sources,hasHostAPI,onImport,onFileImport,onRemove
               {(catalog.rooms||[]).map((room,i)=>(
                 <div key={`${room}-${i}`} style={{display:"flex",alignItems:"center",gap:7,padding:"5px 8px",borderRadius:5,background:"rgba(255,255,255,0.025)",border:"1px solid rgba(0,212,255,0.06)"}}>
                   <span style={{width:10,height:10,borderRadius:2,background:CATALOG_COLORS[i%CATALOG_COLORS.length],opacity:.85}}/>
+                  {mark(isRoomPlaced(room))}
                   <CommitInput value={room} onCommit={next=>onUpdateRoom?.(i,next)}
                     style={{...INPUT,flex:1,minWidth:0,padding:"3px 6px",fontSize:10}}/>
                   <button style={{...btn(false,true),padding:"1px 4px",fontSize:9}} onClick={()=>onDeleteRoom?.(i)}>✕</button>
@@ -1244,6 +1269,7 @@ function CatalogPanel({catalog,sources,hasHostAPI,onImport,onFileImport,onRemove
             {(catalog.locations||[]).map((loc,i)=>(
               <div key={`${loc.number||i}-${loc.label}`} style={{padding:"6px 8px",borderRadius:5,background:"rgba(255,255,255,0.025)",border:"1px solid rgba(0,212,255,0.06)"}}>
                 <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                  {mark(isLocationPlaced(loc))}
                   <span style={{color:"rgba(0,212,255,0.45)",fontSize:10,width:22}}>{loc.number||"-"}</span>
                   <span style={{color:"#c9fffe",fontSize:11,fontWeight:"bold",flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{loc.label}</span>
                   {loc.placeable&&<span style={{color:"#00e676",fontSize:9}}>(p)</span>}
@@ -1269,8 +1295,13 @@ function CatalogPanel({catalog,sources,hasHostAPI,onImport,onFileImport,onRemove
                 </div>
                 <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
                   {(cls.objects||[]).map(obj=>(
-                    <span key={obj.name} title={obj.image||obj.name} style={{padding:"2px 5px",borderRadius:4,background:"rgba(0,212,255,0.06)",border:"1px solid rgba(0,212,255,0.08)",color:"rgba(201,255,254,0.82)",fontSize:9}}>
-                      {obj.name}
+                    <span key={obj.name} title={`${isObjectPlaced(obj)?"지도에 지정됨":"미지정"} · ${obj.image||obj.name}`} style={{
+                      padding:"2px 5px",borderRadius:4,
+                      background:isObjectPlaced(obj)?"rgba(0,230,118,0.08)":"rgba(0,212,255,0.06)",
+                      border:`1px solid ${isObjectPlaced(obj)?"rgba(0,230,118,0.22)":"rgba(0,212,255,0.08)"}`,
+                      color:isObjectPlaced(obj)?"rgba(184,255,216,0.9)":"rgba(201,255,254,0.82)",fontSize:9,
+                    }}>
+                      <span style={{fontWeight:"bold",marginRight:4,color:isObjectPlaced(obj)?"#00e676":"rgba(0,212,255,0.28)"}}>{isObjectPlaced(obj)?"O":"-"}</span>{obj.name}
                     </span>
                   ))}
                 </div>
@@ -1307,7 +1338,7 @@ function CommitInput({value,onCommit,style,...props}) {
 }
 
 // ─── Semantic panel (4-level hierarchy: map > room > carrier > object) ───────
-function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,goalList,startPoses,startTasks,setSelectedStartTask,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameGoalId,onRenameStartPoseId,onAddGoalList,onUpdateGoalList,onDeleteGoalList,onImportGoalList,onImportGoalListFile,onExportGoalList,setWaypoints,onImportJSON,onImportFile,onExportJSON,toWorld,resolution,typeOptions}) {
+function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,goalList,startPoses,startTasks,setSelectedStartTask,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameGoalId,onRenameStartPoseId,onAddGoalList,onUpdateGoalList,onDeleteGoalList,onImportGoalList,onImportGoalListFile,onExportGoalList,setWaypoints,onImportJSON,onImportFile,onExportJSON,toWorld,resolution,typeOptions}) {
   const res=resolution||0.05;
   const [expanded,setExpanded]=useState({});
   const toggle=(id)=>setExpanded(p=>({...p,[id]:!p[id]}));
@@ -1534,7 +1565,7 @@ function SemanticPanel({maps,rooms,carriers,objects,waypoints,goals,goalList,sta
   };
 
   return(
-    <div style={{width:260,background:"#070f1e",borderLeft:"1px solid rgba(0,212,255,0.12)",display:"flex",flexDirection:"column",flexShrink:0}}>
+    <div style={{width,background:"#070f1e",borderLeft:"1px solid rgba(0,212,255,0.12)",display:"flex",flexDirection:"column",flexShrink:0}}>
       <div style={{padding:"9px 14px",borderBottom:"1px solid rgba(0,212,255,0.12)",color:"#00d4ff",fontWeight:"bold",letterSpacing:1,fontSize:12,display:"flex",justifyContent:"space-between"}}>
         <span>🗺 시맨틱 레이어</span><span style={{opacity:.4,fontSize:10}}>{maps.length}맵·{rooms.length}방·{carriers.length}캐·{objects.length}객·{goals.length}골·목록{goalListCount}·{waypoints.length}WP{startPoseCount?`·시작${startPoseCount}`:""}</span>
       </div>
@@ -2041,6 +2072,8 @@ export default function Nav2MapEditor() {
   const [activeTab,   setActiveTab]   = useState("edit");
   const [toolbarW,    setToolbarW]    = useState(90);
   const tbResizing    = useRef(false);
+  const [semPanelW,   setSemPanelW]   = useState(300);
+  const semPanelResizing = useRef(false);
   const [tool,        setTool]        = useState("brush");
   const [drawColor,   setDrawColor]   = useState(PX_OCCUPIED);
   const [brushSz,     setBrushSz]     = useState(5);
@@ -4728,6 +4761,9 @@ export default function Nav2MapEditor() {
           <CatalogPanel
             catalog={semanticCatalog}
             sources={catalogSources}
+            placedRooms={rooms}
+            placedCarriers={carriers}
+            placedObjects={objects}
             hasHostAPI={hasHostAPI}
             onImport={handleCatalogOpen}
             onFileImport={handleCatalogFiles}
@@ -4803,7 +4839,29 @@ export default function Nav2MapEditor() {
 
         {/* ── SEMANTIC PANEL (rooms + carriers + objects + waypoints) ── */}
         {showSemPanel&&(
+          <>
+          <div style={{width:5,cursor:"col-resize",background:"rgba(0,212,255,0.08)",flexShrink:0,position:"relative"}}
+            onMouseDown={e=>{
+              e.preventDefault();
+              semPanelResizing.current=true;
+              const startX=e.clientX,startW=semPanelW;
+              const onMove=ev=>{
+                if(!semPanelResizing.current)return;
+                const nw=Math.max(240,Math.min(620,startW-(ev.clientX-startX)));
+                setSemPanelW(nw);
+              };
+              const onUp=()=>{
+                semPanelResizing.current=false;
+                window.removeEventListener("mousemove",onMove);
+                window.removeEventListener("mouseup",onUp);
+              };
+              window.addEventListener("mousemove",onMove);
+              window.addEventListener("mouseup",onUp);
+            }}>
+            <div style={{position:"absolute",top:"50%",left:1,transform:"translateY(-50%)",width:3,height:30,borderRadius:2,background:"rgba(0,212,255,0.25)"}}/>
+          </div>
           <SemanticPanel
+            width={semPanelW}
             maps={maps} rooms={rooms} carriers={carriers} objects={objects} waypoints={waypoints} goals={goals} goalList={goalList}
             startPoses={startPoses} startTasks={START_TASKS} setSelectedStartTask={setSelectedStartTask}
             selId={selSemId} setSelId={setSelSemId}
@@ -4866,6 +4924,7 @@ export default function Nav2MapEditor() {
             toWorld={toWorld} resolution={meta.resolution}
             typeOptions={typeOptions}
           />
+          </>
         )}
       </div>
 
