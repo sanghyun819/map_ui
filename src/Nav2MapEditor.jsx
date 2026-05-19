@@ -1384,7 +1384,7 @@ function CommitInput({value,onCommit,style,...props}) {
 }
 
 // ─── Semantic panel (4-level hierarchy: map > room > carrier > object) ───────
-function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,goalList,startPoses,startTasks,setSelectedStartTask,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameGoalId,onRenameStartPoseId,onAddGoalList,onUpdateGoalList,onDeleteGoalList,onImportGoalList,onImportGoalListFile,onExportGoalList,setWaypoints,onImportJSON,onImportFile,onExportJSON,toWorld,resolution,typeOptions}) {
+function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,goalList,startPoses,startTasks,setSelectedStartTask,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameObjId,onRenameGoalId,onRenameStartPoseId,onAddGoalList,onUpdateGoalList,onDeleteGoalList,onImportGoalList,onImportGoalListFile,onExportGoalList,setWaypoints,onImportJSON,onImportFile,onExportJSON,toWorld,resolution,typeOptions}) {
   const res=resolution||0.05;
   const [expanded,setExpanded]=useState({});
   const toggle=(id)=>setExpanded(p=>({...p,[id]:!p[id]}));
@@ -1517,6 +1517,11 @@ function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,go
         </div>
         {isSel&&(
           <div style={{marginTop:4,display:"flex",flexDirection:"column",gap:3}} onClick={e=>e.stopPropagation()}>
+            <div style={{display:"flex",alignItems:"center",gap:4}}>
+              <span style={{fontSize:9,color:"rgba(0,212,255,0.4)",whiteSpace:"nowrap"}}>ID</span>
+              <CommitInput value={obj.id||""} onCommit={next=>onRenameObjId?.(obj.id,next)}
+                style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10}}/>
+            </div>
             {carriers.length>0&&(
               <div style={{display:"flex",alignItems:"center",gap:4}}>
                 <span style={{fontSize:9,color:"rgba(0,212,255,0.4)",whiteSpace:"nowrap"}}>캐리어</span>
@@ -4976,6 +4981,27 @@ export default function Nav2MapEditor() {
               else if(layer==="carrier") setCarriers(p=>p.map(c=>c.id===id?{...c,[field]:value}:c));
               else if(layer==="object") setObjects(p=>p.map(o=>o.id===id?{...o,[field]:value}:o));
               else if(layer==="goal") setGoals(p=>p.map(g=>g.id===id?{...g,[field]:value}:g));
+            }}
+            onRenameObjId={(oldId,nextRaw)=>{
+              const nextId=String(nextRaw||"").trim();
+              if(!nextId){setStatus("⚠ 오브젝트 ID는 비워둘 수 없습니다");return false;}
+              const usedIds=[
+                ...maps.map(m=>m.id),...rooms.map(r=>r.id),...carriers.map(c=>c.id),
+                ...objects.filter(o=>o.id!==oldId).map(o=>o.id),
+                ...goals.map(g=>g.id),...waypoints.map((wp,i)=>wp.id||`w${i+1}`),
+                ...Object.values(startPoses).map(p=>p?.id).filter(Boolean),
+              ];
+              if(usedIds.includes(nextId)){
+                setStatus(`⚠ 이미 있는 ID: ${nextId}`);
+                return false;
+              }
+              const idMatch=nextId.match(/^o(\d+)$/);
+              if(idMatch)_oIdx=Math.max(_oIdx,Number(idMatch[1]));
+              setObjects(p=>p.map(o=>o.id===oldId?{...o,id:nextId}:o));
+              setGoals(p=>p.map(g=>g.target_id===oldId?{...g,target_id:nextId}:g));
+              if(selSemId===oldId)setSelSemId(nextId);
+              setStatus(`🔹 오브젝트 ID 변경: ${oldId} → ${nextId}`);
+              return true;
             }}
             onRenameGoalId={(oldId,nextRaw)=>{
               const nextId=String(nextRaw||"").trim();
