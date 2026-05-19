@@ -233,6 +233,7 @@ const OBJECT_TYPES = [
   { id:"obstacle",  label:"obstacle", icon:"⬛",  color:"#ff5252", point:false },
   { id:"custom",    label:"custom",   icon:"◎",   color:"#eeeeee", point:true  },
 ];
+const EMPTY_SEAT_TYPE = { id:"empty_seat", label:"empty seat", icon:"▧", color:"#00e676", alpha:0.13 };
 const CATALOG_COLORS=["#4fc3f7","#ffb74d","#ce93d8","#81c784","#90caf9","#f48fb1","#fff176","#80deea","#bcaaa4","#a5d6a7"];
 const DEFAULT_SEMANTIC_CATALOG={rooms:["kitchen","living room","bedroom","laundry room"],locations:[],objectClasses:[]};
 let _catalogSourceIdx=0;
@@ -609,8 +610,8 @@ function thetaFromSemanticPose(item){
   if(explicit!=null)return explicit;
   return yawFromOrientation(item?.orientation||item?.pose?.orientation)||0;
 }
-function maxIdNumber(prefix,items){
-  let max=0;
+function maxIdNumber(prefix,items,initial=0){
+  let max=initial;
   (items||[]).forEach(it=>{
     const m=String(it?.id||"").match(new RegExp(`^${prefix}(\\d+)$`));
     if(m)max=Math.max(max,parseInt(m[1],10));
@@ -628,16 +629,18 @@ function syncSemanticCounters(next){
   _rIdx=maxIdNumber("r",next.rooms);
   _cIdx=maxIdNumber("c",next.carriers);
   _oIdx=maxIdNumber("o",next.objects);
+  _eIdx=maxIdNumber("e",next.emptySeats,-1);
   _wIdx=maxIdNumber("w",next.waypoints);
   _gIdx=maxIdNumber("g",next.goals);
   if(Object.prototype.hasOwnProperty.call(next,"goalList"))_glIdx=maxIdNumber("gl",next.goalList);
 }
 
-let _mIdx=0,_rIdx=0,_cIdx=0,_oIdx=0,_wIdx=0,_gIdx=0,_glIdx=0;
+let _mIdx=0,_rIdx=0,_cIdx=0,_oIdx=0,_eIdx=-1,_wIdx=0,_gIdx=0,_glIdx=0;
 const muid=()=>`m${++_mIdx}`;
 const ruid=()=>`r${++_rIdx}`;
 const cuid=()=>`c${++_cIdx}`;
 const ouid=()=>`o${++_oIdx}`;
+const euid=()=>`e${++_eIdx}`;
 const wuid=()=>`w${++_wIdx}`;
 const guid=()=>`g${++_gIdx}`;
 const gluid=()=>`gl${++_glIdx}`;
@@ -680,6 +683,9 @@ const SEM_TOOL_GROUPS=[
     {id:"semRectObj",     icon:"▭", label:"사각",    key:"5"},
     {id:"semPolyObj",     icon:"⬡", label:"다각형",  key:"6"},
     {id:"semPoint",       icon:"◎", label:"포인트",  key:"7"},
+  ]},
+  {label:"빈좌석",  color:"#00e676", tools:[
+    {id:"semPolyEmptySeat",icon:"▧", label:"다각형",  key:"Q"},
   ]},
 ];
 const SEM_EXTRA_TOOLS=[
@@ -861,11 +867,12 @@ function SemanticDialog({mode, typeOptions, onConfirm, onCancel}) {
 }
 
 // ─── Goal dialog ─────────────────────────────────────────────────────────────
-function GoalDialog({rooms,carriers,objects,goalList,roomId,goalId,typeOptions,onConfirm,onCancel}){
-  // Targets are optional. A semantic goal can be just a pose, or it can face a carrier/object.
+function GoalDialog({rooms,carriers,objects,emptySeats,goalList,roomId,goalId,typeOptions,onConfirm,onCancel}){
+  // Targets are optional. A semantic goal can be just a pose, or it can face a semantic area.
   const carrierTargets=carriers.map(c=>{const ct=typeOptions.carriers.find(t=>t.id===c.type);return{id:c.id,label:c.label,icon:ct?.icon||"📦",type:"carrier",color:ct?.color||"#4fc3f7"};});
   const objectTargets=objects.map(o=>{const ot=typeOptions.objects.find(t=>t.id===o.type);return{id:o.id,label:o.label,icon:ot?.icon||"🔹",type:"object",color:ot?.color||"#ffaa00"};});
-  const allTargets=[...carrierTargets,...objectTargets];
+  const emptySeatTargets=(emptySeats||[]).map(seat=>({id:seat.id,label:seat.label||seat.id,icon:EMPTY_SEAT_TYPE.icon,type:"emptySeat",color:EMPTY_SEAT_TYPE.color}));
+  const allTargets=[...carrierTargets,...objectTargets,...emptySeatTargets];
   const [targetId,setTargetId]=useState(allTargets[0]?.id||"");
   const [goalListId,setGoalListId]=useState("");
   const [label,setLabel]=useState("");
@@ -923,7 +930,7 @@ function GoalDialog({rooms,carriers,objects,goalList,roomId,goalId,typeOptions,o
               <span style={{fontSize:9,opacity:.5,marginLeft:"auto"}}>현재 방향 유지</span>
             </button>
             {allTargets.length===0?(
-              <div style={{color:"rgba(255,102,128,0.5)",fontSize:10,padding:"8px 10px",textAlign:"center"}}>캐리어/객체 없이도 골을 추가할 수 있습니다</div>
+              <div style={{color:"rgba(255,102,128,0.5)",fontSize:10,padding:"8px 10px",textAlign:"center"}}>캐리어/객체/빈좌석 없이도 골을 추가할 수 있습니다</div>
             ):(
               <>
                 {carrierTargets.length>0&&(
@@ -936,6 +943,12 @@ function GoalDialog({rooms,carriers,objects,goalList,roomId,goalId,typeOptions,o
                   <div style={{display:"flex",flexDirection:"column",gap:3,marginTop:carrierTargets.length?7:0}}>
                     <div style={{fontSize:9,color:"rgba(255,170,0,0.68)",letterSpacing:1,padding:"3px 2px 1px"}}>OBJECTS</div>
                     {objectTargets.map(renderTargetButton)}
+                  </div>
+                )}
+                {emptySeatTargets.length>0&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:3,marginTop:(carrierTargets.length||objectTargets.length)?7:0}}>
+                    <div style={{fontSize:9,color:"rgba(0,230,118,0.68)",letterSpacing:1,padding:"3px 2px 1px"}}>EMPTY SEATS</div>
+                    {emptySeatTargets.map(renderTargetButton)}
                   </div>
                 )}
               </>
@@ -1384,7 +1397,7 @@ function CommitInput({value,onCommit,style,...props}) {
 }
 
 // ─── Semantic panel (4-level hierarchy: map > room > carrier > object) ───────
-function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,goalList,startPoses,startTasks,setSelectedStartTask,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameObjId,onRenameGoalId,onRenameStartPoseId,onAddGoalList,onUpdateGoalList,onDeleteGoalList,onImportGoalList,onImportGoalListFile,onExportGoalList,setWaypoints,onImportJSON,onImportFile,onExportJSON,toWorld,resolution,typeOptions}) {
+function SemanticPanel({width=260,maps,rooms,carriers,objects,emptySeats,waypoints,goals,goalList,startPoses,startTasks,setSelectedStartTask,selId,setSelId,selWpIdx,setSelWpIdx,onDeleteMap,onDeleteRoom,onDeleteCarrier,onDeleteObj,onDeleteEmptySeat,onDeleteWp,onDeleteGoal,onDeleteStart,onReassign,onRenameObjId,onRenameEmptySeatId,onRenameGoalId,onRenameStartPoseId,onAddGoalList,onUpdateGoalList,onDeleteGoalList,onImportGoalList,onImportGoalListFile,onExportGoalList,setWaypoints,onImportJSON,onImportFile,onExportJSON,toWorld,resolution,typeOptions}) {
   const res=resolution||0.05;
   const [expanded,setExpanded]=useState({});
   const toggle=(id)=>setExpanded(p=>({...p,[id]:!p[id]}));
@@ -1395,6 +1408,7 @@ function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,go
   const GOAL_LIST_RGB="179,136,255";
   const [sectionOpen,setSectionOpen]=useState(()=>({
     start:startPoseCount<=2,
+    emptySeats:true,
     goalList:true,
     goals:goals.length<=3,
     waypoints:waypoints.length<=3,
@@ -1430,8 +1444,10 @@ function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,go
     const obj=objects.find(o=>o.id===selId);
     if(obj?.carrierId)openCarrier(obj.carrierId);
     else if(obj?.roomId)openRoom(obj.roomId);
+    const emptySeat=emptySeats.find(e=>e.id===selId);
+    if(emptySeat?.roomId)openRoom(emptySeat.roomId);
     if(Object.keys(next).length)setExpanded(prev=>({...prev,...next}));
-  },[selId,maps,rooms,carriers,objects]);
+  },[selId,maps,rooms,carriers,objects,emptySeats]);
 
   const insidePoly=(poly,obj)=>{
     if(!poly)return false;
@@ -1483,6 +1499,14 @@ function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,go
   const roomsInMap=(map)=>{
     return rooms.filter(r=>roomBelongsToMap(r,map));
   };
+  const emptySeatsInRoom=(room)=>{
+    const rp=shapeToPoly(room)||[];
+    return emptySeats.filter(seat=>{
+      if(seat.roomId===room.id)return true;
+      const sp=shapeToPoly(seat)||[];
+      return rp.length>0&&polyMostlyInside(rp,sp,0.8);
+    });
+  };
   // Unassigned rooms (not in any map)
   const unassignedRooms=rooms.filter(r=>!maps.some(m=>roomBelongsToMap(r,m)));
   // Unassigned carriers (not in any room)
@@ -1495,6 +1519,49 @@ function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,go
   });
   unassignedCarriers.forEach(c=>{objectsOnCarrier(c).forEach(o=>assignedObjIds.add(o.id));});
   const unassignedObjects=objects.filter(o=>!assignedObjIds.has(o.id));
+  const assignedEmptySeatIds=new Set();
+  rooms.forEach(r=>emptySeatsInRoom(r).forEach(seat=>assignedEmptySeatIds.add(seat.id)));
+  const unassignedEmptySeats=emptySeats.filter(seat=>!assignedEmptySeatIds.has(seat.id));
+
+  const renderEmptySeat=(seat,indent=0)=>{
+    const isSel=selId===seat.id;
+    const poly=shapeToPoly(seat)||[];
+    return(
+      <div key={seat.id} onClick={e=>{e.stopPropagation();setSelId(isSel?null:seat.id);}} style={{
+        marginLeft:indent,marginTop:3,padding:"5px 8px",borderRadius:5,cursor:"pointer",
+        background:isSel?"rgba(0,230,118,0.12)":"rgba(0,230,118,0.035)",
+        border:isSel?"1px solid rgba(0,230,118,0.5)":"1px solid rgba(0,230,118,0.12)",
+      }}>
+        <div style={{display:"flex",alignItems:"center",gap:5}}>
+          <span style={{fontSize:12,color:EMPTY_SEAT_TYPE.color}}>▧</span>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{color:EMPTY_SEAT_TYPE.color,fontSize:11,fontWeight:"bold",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{seat.label||seat.id}</div>
+            <div style={{color:"rgba(0,230,118,0.42)",fontSize:9}}>{poly.length}꼭짓점</div>
+          </div>
+          <button onClick={e=>{e.stopPropagation();onDeleteEmptySeat(seat.id);}} style={{...btn(false,true),padding:"1px 4px",fontSize:9}}>✕</button>
+        </div>
+        {isSel&&(
+          <div style={{marginTop:4,display:"flex",flexDirection:"column",gap:3}} onClick={e=>e.stopPropagation()}>
+            <div style={{display:"flex",alignItems:"center",gap:4}}>
+              <span style={{fontSize:9,color:"rgba(0,230,118,0.5)",whiteSpace:"nowrap"}}>ID</span>
+              <CommitInput value={seat.id||""} onCommit={next=>onRenameEmptySeatId?.(seat.id,next)}
+                style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10,borderColor:"rgba(0,230,118,0.24)"}}/>
+            </div>
+            {rooms.length>0&&(
+              <div style={{display:"flex",alignItems:"center",gap:4}}>
+                <span style={{fontSize:9,color:"rgba(0,230,118,0.5)",whiteSpace:"nowrap"}}>소속방</span>
+                <select value={seat.roomId||""} onChange={e=>onReassign("emptySeat",seat.id,"roomId",e.target.value||null)}
+                  style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10,borderColor:"rgba(0,230,118,0.24)"}}>
+                  <option value="">없음</option>
+                  {rooms.map(r=><option key={r.id} value={r.id}>{r.label}</option>)}
+                </select>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const renderObj=(obj,indent=0)=>{
     const ot=typeOptions.objects.find(t=>t.id===obj.type)||typeOptions.objects[typeOptions.objects.length-1];
@@ -1602,6 +1669,7 @@ function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,go
     const poly=shapeToPoly(room)||[];
     const nestedCarriers=carriersInRoom(room);
     const nestedObjs=objectsInRoom(room);
+    const nestedEmptySeats=emptySeatsInRoom(room);
     const isSel=selId===room.id, isExp=expanded[room.id];
     const isPoly=!!room.poly;
     return(
@@ -1620,7 +1688,7 @@ function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,go
             <span style={{fontSize:9,color:"rgba(0,212,255,0.25)"}}>{isExp?"▲":"▼"}</span>
             <button onClick={e=>{e.stopPropagation();onDeleteRoom(room.id);}} style={{...btn(false,true),padding:"1px 5px",fontSize:10}}>✕</button>
           </div>
-          {(nestedCarriers.length>0||nestedObjs.length>0)&&<div style={{fontSize:9,color:"rgba(0,212,255,0.3)",marginTop:2}}>└ {nestedCarriers.length}캐리어 · {nestedObjs.length}객체</div>}
+          {(nestedCarriers.length>0||nestedObjs.length>0||nestedEmptySeats.length>0)&&<div style={{fontSize:9,color:"rgba(0,212,255,0.3)",marginTop:2}}>└ {nestedCarriers.length}캐리어 · {nestedObjs.length}객체 · {nestedEmptySeats.length}빈좌석</div>}
           {isSel&&maps.length>0&&(
             <div style={{marginTop:5,display:"flex",alignItems:"center",gap:4}} onClick={e=>e.stopPropagation()}>
               <span style={{fontSize:9,color:"rgba(0,212,255,0.4)"}}>소속맵</span>
@@ -1635,6 +1703,7 @@ function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,go
         {isExp&&<>
           {nestedCarriers.map(c=>renderCarrier(c,14))}
           {nestedObjs.map(o=>renderObj(o,14))}
+          {nestedEmptySeats.map(seat=>renderEmptySeat(seat,14))}
         </>}
       </div>
     );
@@ -1643,10 +1712,10 @@ function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,go
   return(
     <div style={{width,background:"#070f1e",borderLeft:"1px solid rgba(0,212,255,0.12)",display:"flex",flexDirection:"column",flexShrink:0}}>
       <div style={{padding:"9px 14px",borderBottom:"1px solid rgba(0,212,255,0.12)",color:"#00d4ff",fontWeight:"bold",letterSpacing:1,fontSize:12,display:"flex",justifyContent:"space-between"}}>
-        <span>🗺 시맨틱 레이어</span><span style={{opacity:.4,fontSize:10}}>{maps.length}맵·{rooms.length}방·{carriers.length}캐·{objects.length}객·{goals.length}골·목록{goalListCount}·{waypoints.length}WP{startPoseCount?`·시작${startPoseCount}`:""}</span>
+        <span>🗺 시맨틱 레이어</span><span style={{opacity:.4,fontSize:10}}>{maps.length}맵·{rooms.length}방·{carriers.length}캐·{objects.length}객·{emptySeats.length}석·{goals.length}골·목록{goalListCount}·{waypoints.length}WP{startPoseCount?`·시작${startPoseCount}`:""}</span>
       </div>
       <div style={{flex:1,overflow:"auto",padding:8}}>
-        {maps.length===0&&rooms.length===0&&carriers.length===0&&objects.length===0&&waypoints.length===0&&goals.length===0&&goalList.length===0&&!startPoseCount&&(
+        {maps.length===0&&rooms.length===0&&carriers.length===0&&objects.length===0&&emptySeats.length===0&&waypoints.length===0&&goals.length===0&&goalList.length===0&&!startPoseCount&&(
           <div style={{color:"rgba(0,212,255,0.22)",textAlign:"center",padding:"24px 8px",lineHeight:2.2,fontSize:11}}>
             시맨틱 항목 없음<br/>
             <span style={{fontSize:10,opacity:.7}}>맵→방→캐리어→객체 · S:시작점 · 9:골 · W:웨이포인트</span>
@@ -1693,6 +1762,12 @@ function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,go
           <div style={{marginTop:8}}>
             <div style={{fontSize:9,color:"rgba(0,212,255,0.25)",marginBottom:4,paddingLeft:4,letterSpacing:1}}>── 미할당 객체</div>
             {unassignedObjects.map(o=>renderObj(o,0))}
+          </div>
+        )}
+        {unassignedEmptySeats.length>0&&(
+          <div style={{marginTop:8}}>
+            <div style={{fontSize:9,color:"rgba(0,230,118,0.32)",marginBottom:4,paddingLeft:4,letterSpacing:1}}>── 미할당 빈좌석</div>
+            {unassignedEmptySeats.map(seat=>renderEmptySeat(seat,0))}
           </div>
         )}
       </div>
@@ -1795,7 +1870,7 @@ function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,go
               {goals.map(g=>{
                 const isSel=selId===g.id;
                 const room=rooms.find(r=>r.id===g.room_id);
-                const target=[...carriers,...objects].find(s=>s.id===g.target_id);
+                const target=[...carriers,...objects,...emptySeats].find(s=>s.id===g.target_id);
                 return(
                   <div key={g.id} onClick={()=>setSelId(isSel?null:g.id)} style={{
                     margin:"0 8px 4px",padding:"5px 8px",borderRadius:5,cursor:"pointer",
@@ -1843,6 +1918,7 @@ function SemanticPanel({width=260,maps,rooms,carriers,objects,waypoints,goals,go
                             <option value="">없음</option>
                             {carriers.map(c=><option key={c.id} value={c.id}>[캐] {c.label}</option>)}
                             {objects.map(o=><option key={o.id} value={o.id}>[객] {o.label}</option>)}
+                            {emptySeats.map(seat=><option key={seat.id} value={seat.id}>[석] {seat.label||seat.id}</option>)}
                           </select>
                         </div>
                       </div>
@@ -2170,6 +2246,7 @@ export default function Nav2MapEditor() {
   const [rooms,       setRooms]       = useState([]);
   const [carriers,    setCarriers]    = useState([]);
   const [objects,     setObjects]     = useState([]);
+  const [emptySeats,  setEmptySeats]  = useState([]);
   const [goals,       setGoals]       = useState([]);
   const [goalList,    setGoalList]    = useState([]);
   const [selSemId,    setSelSemId]    = useState(null);
@@ -2369,6 +2446,7 @@ export default function Nav2MapEditor() {
   const roomsRef    = useRef(rooms);
   const carriersRef = useRef(carriers);
   const objectsRef  = useRef(objects);
+  const emptySeatsRef = useRef(emptySeats);
   const startPosesRef= useRef(startPoses);
   const selectedStartTaskRef= useRef(selectedStartTask);
   const waypointsRef= useRef(waypoints);
@@ -2378,6 +2456,7 @@ export default function Nav2MapEditor() {
   useEffect(()=>{roomsRef.current=rooms;},[rooms]);
   useEffect(()=>{carriersRef.current=carriers;},[carriers]);
   useEffect(()=>{objectsRef.current=objects;},[objects]);
+  useEffect(()=>{emptySeatsRef.current=emptySeats;},[emptySeats]);
   useEffect(()=>{startPosesRef.current=startPoses;},[startPoses]);
   useEffect(()=>{selectedStartTaskRef.current=selectedStartTask;},[selectedStartTask]);
   useEffect(()=>{waypointsRef.current=waypoints;},[waypoints]);
@@ -2388,14 +2467,14 @@ export default function Nav2MapEditor() {
     const c=canvasRef.current;if(!c)return;
     const d=c.getContext("2d").getImageData(0,0,c.width,c.height);
     const copy=new ImageData(new Uint8ClampedArray(d.data),d.width,d.height);
-    const snap={img:copy, maps:[...mapsRef.current], rooms:[...roomsRef.current], carriers:[...carriersRef.current], objects:[...objectsRef.current], startPoses:{...startPosesRef.current}, selectedStartTask:selectedStartTaskRef.current, waypoints:[...waypointsRef.current], goals:[...goalsRef.current], goalList:[...goalListRef.current]};
+    const snap={img:copy, maps:[...mapsRef.current], rooms:[...roomsRef.current], carriers:[...carriersRef.current], objects:[...objectsRef.current], emptySeats:[...emptySeatsRef.current], startPoses:{...startPosesRef.current}, selectedStartTask:selectedStartTaskRef.current, waypoints:[...waypointsRef.current], goals:[...goalsRef.current], goalList:[...goalListRef.current]};
     histRef.current=histRef.current.slice(0,histIdxRef.current+1);
     histRef.current.push(snap);if(histRef.current.length>40)histRef.current.shift();
     histIdxRef.current=histRef.current.length-1;
   },[]);
   const restoreSnap=useCallback((snap)=>{
     canvasRef.current?.getContext("2d").putImageData(snap.img,0,0);
-    setMaps(snap.maps||[]);setRooms(snap.rooms);setCarriers(snap.carriers);setObjects(snap.objects);setStartPoses(snap.startPoses||{});setSelectedStartTask(snap.selectedStartTask||DEFAULT_START_TASK);setWaypoints(snap.waypoints);setGoals(snap.goals||[]);setGoalList(snap.goalList||[]);
+    setMaps(snap.maps||[]);setRooms(snap.rooms);setCarriers(snap.carriers);setObjects(snap.objects);setEmptySeats(snap.emptySeats||[]);setStartPoses(snap.startPoses||{});setSelectedStartTask(snap.selectedStartTask||DEFAULT_START_TASK);setWaypoints(snap.waypoints);setGoals(snap.goals||[]);setGoalList(snap.goalList||[]);
   },[]);
   const undoingRef=useRef(false); // prevent snapshot during undo/redo restore
   const draggingRef=useRef(false); // prevent snapshot during drag-move
@@ -2410,7 +2489,7 @@ export default function Nav2MapEditor() {
     // Skip initial mount (saveSnap is called in initCanvas/loadPGMData)
     if(semVersionRef.current===0){semVersionRef.current=1;return;}
     saveSnap();
-  },[maps,rooms,carriers,objects,startPoses,selectedStartTask,waypoints,goals,goalList]); // eslint-disable-line react-hooks/exhaustive-deps
+  },[maps,rooms,carriers,objects,emptySeats,startPoses,selectedStartTask,waypoints,goals,goalList]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Init canvas ──
   const initCanvas=useCallback((w,h,fillV=PX_UNKNOWN)=>{
@@ -2418,7 +2497,7 @@ export default function Nav2MapEditor() {
     c.width=w;c.height=h;
     c.getContext("2d").fillStyle=`rgb(${fillV},${fillV},${fillV})`;c.getContext("2d").fillRect(0,0,w,h);
     setCanvasSize({w,h});histRef.current=[];histIdxRef.current=-1;saveSnap();
-    setMapLoaded(true);setMaps([]);setStartPoses({});setWaypoints([]);setRooms([]);setCarriers([]);setObjects([]);setGoals([]);setGoalList([]);setPolyVerts([]);setRotation(0);
+      setMapLoaded(true);setMaps([]);setStartPoses({});setWaypoints([]);setRooms([]);setCarriers([]);setObjects([]);setEmptySeats([]);setGoals([]);setGoalList([]);setPolyVerts([]);setRotation(0);
     _mIdx=0;_rIdx=0;_cIdx=0;_oIdx=0;_wIdx=0;_gIdx=0;
     const vp=vpRef.current;
     if(vp){const z=Math.min((vp.clientWidth-60)/w,(vp.clientHeight-60)/h,3);setZoom(z);setPan({x:(vp.clientWidth-w*z)/2,y:(vp.clientHeight-h*z)/2});}
@@ -2500,13 +2579,14 @@ export default function Nav2MapEditor() {
   const reprojectSemanticForMap = useCallback((fromMeta, fromSize, toMeta, toSize)=>{
     if(!fromMeta||!toMeta||!fromSize?.h||!toSize?.h)return;
     if(sameMapProjection(fromMeta,fromSize,toMeta,toSize))return;
-    const hasSemantic=mapsRef.current.length||roomsRef.current.length||carriersRef.current.length||objectsRef.current.length||goalsRef.current.length||goalListRef.current.length||waypointsRef.current.length||Object.keys(startPosesRef.current||{}).length;
+    const hasSemantic=mapsRef.current.length||roomsRef.current.length||carriersRef.current.length||objectsRef.current.length||emptySeatsRef.current.length||goalsRef.current.length||goalListRef.current.length||waypointsRef.current.length||Object.keys(startPosesRef.current||{}).length;
     if(!hasSemantic)return;
     slamReprojectingRef.current=true;
     setMaps(p=>p.map(item=>reprojectShapeItem(item,fromMeta,fromSize,toMeta,toSize)));
     setRooms(p=>p.map(item=>reprojectShapeItem(item,fromMeta,fromSize,toMeta,toSize)));
     setCarriers(p=>p.map(item=>reprojectShapeItem(item,fromMeta,fromSize,toMeta,toSize)));
     setObjects(p=>p.map(item=>reprojectShapeItem(item,fromMeta,fromSize,toMeta,toSize)));
+    setEmptySeats(p=>p.map(item=>reprojectShapeItem(item,fromMeta,fromSize,toMeta,toSize)));
     setWaypoints(p=>p.map(item=>reprojectPoseItem(item,fromMeta,fromSize,toMeta,toSize)));
     setGoals(p=>p.map(item=>reprojectPoseItem(item,fromMeta,fromSize,toMeta,toSize)));
     setStartPoses(p=>Object.fromEntries(Object.entries(p||{}).map(([task,pose])=>[task,reprojectPoseItem(pose,fromMeta,fromSize,toMeta,toSize)])));
@@ -2671,6 +2751,12 @@ export default function Nav2MapEditor() {
       drawPolygonItem(ctx, carrier, ct, isSel, alpha, isSel||hov===carrier.id);
     });
 
+    // ── Draw completed empty seats ──
+    emptySeats.forEach(seat=>{
+      const isSel=selSemId===seat.id;
+      drawPolygonItem(ctx, seat, EMPTY_SEAT_TYPE, isSel, alpha, isSel||hov===seat.id);
+    });
+
     // ── Draw completed objects ──
     objects.forEach(obj=>{
       const ot=typeOptions.objects.find(t=>t.id===obj.type)||typeOptions.objects[typeOptions.objects.length-1];
@@ -2780,7 +2866,7 @@ export default function Nav2MapEditor() {
       ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(ax-5*Math.cos(ang-.5),ay+5*Math.sin(ang-.5));ctx.lineTo(ax-5*Math.cos(ang+.5),ay+5*Math.sin(ang+.5));ctx.closePath();
       ctx.fillStyle=gColor;ctx.fill();
       // Dashed line to target
-      const target=[...carriers,...objects].find(s=>s.id===g.target_id);
+      const target=[...carriers,...objects,...emptySeats].find(s=>s.id===g.target_id);
       if(target){
         let tx,ty;
         if(target.point){tx=target.x;ty=target.y;}
@@ -2815,9 +2901,9 @@ export default function Nav2MapEditor() {
 
     // ── Draw in-progress polygon ──
     const pverts=polyVertsRef.current;
-    const isPolyTool=["semPolyMap","semPolyRoom","semPolyCarrier","semPolyObj"].includes(tool);
+    const isPolyTool=["semPolyMap","semPolyRoom","semPolyCarrier","semPolyObj","semPolyEmptySeat"].includes(tool);
     if(isPolyTool&&pverts.length>0){
-      const accentColor=tool==="semPolyMap"?"#90a4ae":tool==="semPolyRoom"?"#00d4ff":tool==="semPolyCarrier"?"#4fc3f7":"#ffaa00";
+      const accentColor=tool==="semPolyMap"?"#90a4ae":tool==="semPolyRoom"?"#00d4ff":tool==="semPolyCarrier"?"#4fc3f7":tool==="semPolyEmptySeat"?"#00e676":"#ffaa00";
       const cur=cursorCanvasRef.current;
       ctx.save();
 
@@ -2877,7 +2963,7 @@ export default function Nav2MapEditor() {
         ctx.restore();
       }
     }
-  },[maps,rooms,carriers,objects,startPoses,startDraft,selectedStartTask,waypoints,goals,selWpIdx,selSemId,semOpacity,polySnap,tool,drawRos2,typeOptions]);
+  },[maps,rooms,carriers,objects,emptySeats,startPoses,startDraft,selectedStartTask,waypoints,goals,selWpIdx,selSemId,semOpacity,polySnap,tool,drawRos2,typeOptions]);
 
   useEffect(()=>{drawOverlayRef.current=drawOverlay;},[drawOverlay]);
   useEffect(()=>{drawOverlay();},[drawOverlay]);
@@ -2895,10 +2981,24 @@ export default function Nav2MapEditor() {
   // ── Confirm polygon finish ──
   const finishPolygon=useCallback((verts)=>{
     if(verts.length<3)return;
+    if(tool==="semPolyEmptySeat"){
+      const id=euid();
+      const newSeat={id,label:id,color:EMPTY_SEAT_TYPE.color,poly:verts};
+      const parentRoom=rooms.find(r=>{
+        const rp=shapeToPoly(r)||[];
+        return rp.length>0&&polyMostlyInside(rp,verts,0.8);
+      });
+      if(parentRoom)newSeat.roomId=parentRoom.id;
+      setEmptySeats(p=>[...p,newSeat]);
+      setSelSemId(id);setSelWpIdx(null);
+      setStatus(`▧ 빈좌석 추가: ${id}${parentRoom?` (${parentRoom.label} 내)`:""}`);
+      setPolyVerts([]);setPolySnap(false);
+      return;
+    }
     const mode=tool==="semPolyMap"?"map":tool==="semPolyRoom"?"room":tool==="semPolyCarrier"?"carrier":"object";
     setSemDlg({mode, poly:verts});
     setPolyVerts([]);setPolySnap(false);
-  },[tool]);
+  },[tool,rooms]);
 
   // ── Mouse Down ──
   const onMouseDown=useCallback((e)=>{
@@ -2911,7 +3011,7 @@ export default function Nav2MapEditor() {
     const pt=toXY(e);if(!pt)return;
 
     // ── Polygon tools ──
-    if(tool==="semPolyMap"||tool==="semPolyRoom"||tool==="semPolyCarrier"||tool==="semPolyObj"){
+    if(tool==="semPolyMap"||tool==="semPolyRoom"||tool==="semPolyCarrier"||tool==="semPolyObj"||tool==="semPolyEmptySeat"){
       if(!inBounds(pt))return;
       const pverts=polyVertsRef.current;
       if(pverts.length>=3){
@@ -2980,15 +3080,16 @@ export default function Nav2MapEditor() {
         dragRef.current={id:hitGoal.id, layer:"goal", startPt:{x:pt.x,y:pt.y}};
         return;
       }
-      // Priority: objects > carriers > rooms > maps
-      const hit=[...objects].reverse().find(s=>hitTestShape(s,pt.x,pt.y))
+      // Priority: empty seats > objects > carriers > rooms > maps
+      const hit=[...emptySeats].reverse().find(s=>hitTestShape(s,pt.x,pt.y))
+        || [...objects].reverse().find(s=>hitTestShape(s,pt.x,pt.y))
         || [...carriers].reverse().find(s=>hitTestShape(s,pt.x,pt.y))
         || [...rooms].reverse().find(s=>hitTestShape(s,pt.x,pt.y))
         || [...maps].reverse().find(s=>hitTestShape(s,pt.x,pt.y));
       if(hit){
         setSelSemId(hit.id);setSelWpIdx(null);
         // Determine which layer
-        const layer=maps.find(m=>m.id===hit.id)?"map":rooms.find(r=>r.id===hit.id)?"room":carriers.find(c=>c.id===hit.id)?"carrier":"object";
+        const layer=maps.find(m=>m.id===hit.id)?"map":rooms.find(r=>r.id===hit.id)?"room":carriers.find(c=>c.id===hit.id)?"carrier":emptySeats.find(e=>e.id===hit.id)?"emptySeat":"object";
         dragRef.current={id:hit.id, layer, startPt:{x:pt.x,y:pt.y}};
       } else {
         setSelSemId(null);setSelWpIdx(null);
@@ -3035,11 +3136,11 @@ export default function Nav2MapEditor() {
     isDrawing.current=true;shapeStart.current=pt;lastPt.current=pt;
     if(["line","rect","circle"].includes(tool)){const c=canvasRef.current;snapRef.current=c.getContext("2d").getImageData(0,0,c.width,c.height);}
     if((tool==="brush"||tool==="eraser")&&inBounds(pt)){const c=canvasRef.current;paintDot(c.getContext("2d"),pt.x,pt.y,tool==="eraser"?brushSz*2:brushSz,tool==="eraser"?PX_FREE:drawColor);}
-  },[tool,drawColor,brushSz,toXY,saveSnap,finishPolygon,maps,rooms,carriers,objects,startPoses,selectedStartTask,waypoints,goals,mapLoaded,slamMode]);
+  },[tool,drawColor,brushSz,toXY,saveSnap,finishPolygon,maps,rooms,carriers,objects,emptySeats,startPoses,selectedStartTask,waypoints,goals,mapLoaded,slamMode]);
 
   // ── Double click → close polygon ──
   const onDblClick=useCallback((e)=>{
-    if(tool==="semPolyMap"||tool==="semPolyRoom"||tool==="semPolyCarrier"||tool==="semPolyObj"){
+    if(tool==="semPolyMap"||tool==="semPolyRoom"||tool==="semPolyCarrier"||tool==="semPolyObj"||tool==="semPolyEmptySeat"){
       const pverts=polyVertsRef.current;
       if(pverts.length>=3) finishPolygon([...pverts]);
       e.preventDefault();
@@ -3069,12 +3170,13 @@ export default function Nav2MapEditor() {
       else if(d.layer==="map") setMaps(p=>p.map(m=>m.id===d.id?moveShape(m,dx,dy):m));
       else if(d.layer==="room") setRooms(p=>p.map(r=>r.id===d.id?moveShape(r,dx,dy):r));
       else if(d.layer==="carrier") setCarriers(p=>p.map(c=>c.id===d.id?moveShape(c,dx,dy):c));
+      else if(d.layer==="emptySeat") setEmptySeats(p=>p.map(seat=>seat.id===d.id?moveShape(seat,dx,dy):seat));
       else setObjects(p=>p.map(o=>o.id===d.id?moveShape(o,dx,dy):o));
       return;
     }
 
     // Poly snap detection
-    if((tool==="semPolyMap"||tool==="semPolyRoom"||tool==="semPolyCarrier"||tool==="semPolyObj")&&polyVertsRef.current.length>=3){
+    if((tool==="semPolyMap"||tool==="semPolyRoom"||tool==="semPolyCarrier"||tool==="semPolyObj"||tool==="semPolyEmptySeat")&&polyVertsRef.current.length>=3){
       const p0=polyVertsRef.current[0];
       setPolySnap(Math.hypot(cx-p0.x,cy-p0.y)<SNAP_RADIUS);
     }
@@ -3083,6 +3185,7 @@ export default function Nav2MapEditor() {
     {
       const hit=START_TASKS.map(task=>({id:startPoses[task]?.id,pose:startPoses[task]})).filter(x=>x.pose&&x.id).reverse().find(({pose})=>Math.hypot(cx-pose.x,cy-pose.y)<=8)
         || [...goals].reverse().find(g=>Math.hypot(cx-g.x,cy-g.y)<=6)
+        || [...emptySeats].reverse().find(s=>hitTestShape(s,cx,cy))
         || [...objects].reverse().find(s=>hitTestShape(s,cx,cy))
         || [...carriers].reverse().find(s=>hitTestShape(s,cx,cy))
         || [...rooms].reverse().find(s=>hitTestShape(s,cx,cy))
@@ -3092,7 +3195,7 @@ export default function Nav2MapEditor() {
     }
 
     // Always redraw overlay for poly/rect preview
-    if(["semPolyMap","semPolyRoom","semPolyCarrier","semPolyObj","semRectMap","semRectRoom","semRectCarrier","semRectObj"].includes(tool)){
+    if(["semPolyMap","semPolyRoom","semPolyCarrier","semPolyObj","semPolyEmptySeat","semRectMap","semRectRoom","semRectCarrier","semRectObj"].includes(tool)){
       drawOverlay();
     }
 
@@ -3154,7 +3257,7 @@ export default function Nav2MapEditor() {
       ctx.putImageData(snapRef.current,0,0);drawShapePreview(ctx,shapeStart.current.x,shapeStart.current.y,pt.x,pt.y,e.shiftKey,tool);
     }
     lastPt.current=pt;
-  },[tool,drawColor,brushSz,toXY,screenToCanvas,drawOverlay,maps,rooms,carriers,objects,startPoses,setStartPoseForTask,goals]);
+  },[tool,drawColor,brushSz,toXY,screenToCanvas,drawOverlay,maps,rooms,carriers,objects,emptySeats,startPoses,setStartPoseForTask,goals]);
 
   // ── Mouse Up ──
   const onMouseUp=useCallback((e)=>{
@@ -3235,7 +3338,7 @@ export default function Nav2MapEditor() {
     const nextId=String(nextRaw||"").trim();
     if(!nextId){setStatus("⚠ 시작점 ID는 비워둘 수 없습니다");return false;}
     const usedIds=[
-      ...maps.map(m=>m.id),...rooms.map(r=>r.id),...carriers.map(c=>c.id),...objects.map(o=>o.id),
+      ...maps.map(m=>m.id),...rooms.map(r=>r.id),...carriers.map(c=>c.id),...objects.map(o=>o.id),...emptySeats.map(seat=>seat.id),
       ...goals.map(g=>g.id),...waypoints.map((wp,i)=>wp.id||`w${i+1}`),
       ...Object.entries(startPoses).filter(([t])=>t!==key).map(([,p])=>p?.id).filter(Boolean),
     ];
@@ -3253,7 +3356,7 @@ export default function Nav2MapEditor() {
     setTimeout(saveSnap,0);
     setStatus(`⌂ 시작점 설정: ${key} (${nextId})`);
     return true;
-  },[startDlg,maps,rooms,carriers,objects,goals,waypoints,startPoses,setStartPoseForTask,saveSnap]);
+  },[startDlg,maps,rooms,carriers,objects,emptySeats,goals,waypoints,startPoses,setStartPoseForTask,saveSnap]);
 
   // ── Semantic confirm ──
   const onSemConfirm=useCallback((type,label,requestedId="")=>{
@@ -3300,7 +3403,7 @@ export default function Nav2MapEditor() {
       const isPoint=!!point;
       const objectId=String(requestedId||"").trim();
       const usedIds=[
-        ...maps.map(m=>m.id),...rooms.map(r=>r.id),...carriers.map(c=>c.id),...objects.map(o=>o.id),
+        ...maps.map(m=>m.id),...rooms.map(r=>r.id),...carriers.map(c=>c.id),...objects.map(o=>o.id),...emptySeats.map(seat=>seat.id),
         ...goals.map(g=>g.id),...waypoints.map((wp,i)=>wp.id||`w${i+1}`),
         ...Object.values(startPoses).map(p=>p?.id).filter(Boolean),
       ];
@@ -3333,7 +3436,7 @@ export default function Nav2MapEditor() {
     }
     setSemDlg(null);
     return true;
-  },[semDlg,maps,rooms,carriers,objects,goals,waypoints,startPoses,typeOptions]);
+  },[semDlg,maps,rooms,carriers,objects,emptySeats,goals,waypoints,startPoses,typeOptions]);
 
   // ── Goal confirm (update goal placed by drag with target + label) ──
   const onGoalConfirm=useCallback((targetId,label,goalIdOverride=null,goalListItemId=null)=>{
@@ -3346,7 +3449,7 @@ export default function Nav2MapEditor() {
     }
     const finalGoalId=nextGoalId||goalId;
     // If user didn't drag (theta still 0), auto-calculate direction toward target
-    const target=targetId?[...carriers,...objects].find(s=>s.id===targetId):null;
+    const target=targetId?[...carriers,...objects,...emptySeats].find(s=>s.id===targetId):null;
     setGoals(p=>p.map(g=>{
       if(g.id!==goalId)return g;
       let theta=dragTheta||0;
@@ -3364,7 +3467,7 @@ export default function Nav2MapEditor() {
     setTimeout(saveSnap,0);
     setStatus(`🎯 시맨틱 골 설정: ${label}${finalGoalId?` (${finalGoalId})`:""}`);
     return true;
-  },[goalDlg,carriers,objects,saveSnap,selSemId]);
+  },[goalDlg,carriers,objects,emptySeats,saveSnap,selSemId]);
 
   // ── Wheel zoom ──
   const onWheel=useCallback((e)=>{
@@ -3404,6 +3507,7 @@ export default function Nav2MapEditor() {
     setRooms(p=>p.filter(r=>r.id!==selSemId));
     setCarriers(p=>p.filter(c=>c.id!==selSemId));
     setObjects(p=>p.filter(o=>o.id!==selSemId));
+    setEmptySeats(p=>p.filter(seat=>seat.id!==selSemId));
     setGoals(p=>p.filter(g=>g.id!==selSemId));
     setSelSemId(null);
   },[selSemId,selWpIdx,selectedStartTask,startPoses,setStartPoseForTask]);
@@ -3420,14 +3524,14 @@ export default function Nav2MapEditor() {
         if(polyVertsRef.current.length>0){setPolyVerts([]);setPolySnap(false);setStatus("⎋ 다각형 취소");}
         return;
       }
-      if(e.key==="Enter"&&(tool==="semPolyMap"||tool==="semPolyRoom"||tool==="semPolyCarrier"||tool==="semPolyObj")){
+      if(e.key==="Enter"&&(tool==="semPolyMap"||tool==="semPolyRoom"||tool==="semPolyCarrier"||tool==="semPolyObj"||tool==="semPolyEmptySeat")){
         const pverts=polyVertsRef.current;
         if(pverts.length>=3){finishPolygon([...pverts]);}
         return;
       }
       // Backspace: remove last polygon vertex OR delete selected item/waypoint
       if(e.key==="Backspace"){
-        if((tool==="semPolyMap"||tool==="semPolyRoom"||tool==="semPolyCarrier"||tool==="semPolyObj")&&polyVertsRef.current.length>0){
+        if((tool==="semPolyMap"||tool==="semPolyRoom"||tool==="semPolyCarrier"||tool==="semPolyObj"||tool==="semPolyEmptySeat")&&polyVertsRef.current.length>0){
           setPolyVerts(p=>p.slice(0,-1));
         } else if(selSemId||selWpIdx!=null){
           e.preventDefault();
@@ -3440,7 +3544,7 @@ export default function Nav2MapEditor() {
         return;
       }
       const em={b:"brush",e:"eraser",l:"line",r:"rect",c:"circle",f:"fill"};
-      const sm={s:"startPose",w:"waypoint","1":"semRectRoom","2":"semPolyRoom","3":"semRectCarrier","4":"semPolyCarrier","5":"semRectObj","6":"semPolyObj","7":"semPoint","8":"semSelect","9":"semGoal","0":"semSelect"};
+      const sm={s:"startPose",w:"waypoint",q:"semPolyEmptySeat","1":"semRectRoom","2":"semPolyRoom","3":"semRectCarrier","4":"semPolyCarrier","5":"semRectObj","6":"semPolyObj","7":"semPoint","8":"semSelect","9":"semGoal","0":"semSelect"};
       // Rotation: [ ] for ±15°, Shift+[ Shift+] for ±90°
       if(e.key==="["){rotateMap(e.shiftKey?-90:-15);return;}
       if(e.key==="]"){rotateMap(e.shiftKey?90:15);return;}
@@ -3593,6 +3697,20 @@ export default function Nav2MapEditor() {
           return shape?{...base,...shape}:null;
         })
         .filter(Boolean);
+      const nextEmptySeats=(Array.isArray(data.empty_seats)?data.empty_seats:Array.isArray(data.emptySeats)?data.emptySeats:[])
+        .map((seat,i)=>{
+          const shape=getPixelShape(seat);
+          if(!shape)return null;
+          const id=String(seat.id||`e${i}`);
+          return {
+            id,
+            label:String(seat.label||id),
+            color:seat.color||EMPTY_SEAT_TYPE.color,
+            roomId:seat.roomId||seat.room_id||null,
+            ...shape,
+          };
+        })
+        .filter(Boolean);
       const importStartPose=(raw,task=DEFAULT_START_TASK)=>{
         const p=getPosePoint(raw);
         if(!raw||!p)return null;
@@ -3624,9 +3742,9 @@ export default function Nav2MapEditor() {
         })
         .filter(Boolean);
 
-      const next={maps:nextMaps,rooms:nextRooms,carriers:nextCarriers,objects:nextObjects,waypoints:nextWaypoints,goals:nextGoals};
+      const next={maps:nextMaps,rooms:nextRooms,carriers:nextCarriers,objects:nextObjects,emptySeats:nextEmptySeats,waypoints:nextWaypoints,goals:nextGoals};
       syncSemanticCounters(next);
-      setMaps(nextMaps);setRooms(nextRooms);setCarriers(nextCarriers);setObjects(nextObjects);
+      setMaps(nextMaps);setRooms(nextRooms);setCarriers(nextCarriers);setObjects(nextObjects);setEmptySeats(nextEmptySeats);
       setStartPoses(nextStartPoses);setSelectedStartTask(nextSelectedStartTask);setWaypoints(nextWaypoints);setGoals(nextGoals);
       setSelSemId(null);setSelWpIdx(null);setPolyVerts([]);setPolySnap(false);
       setActiveTab("semantic");setTool("semSelect");setShowSemPanel(true);
@@ -3635,7 +3753,7 @@ export default function Nav2MapEditor() {
       if(Array.isArray(semMeta.origin)&&semMeta.origin.length>=2)metaPatch.origin=sourceOrigin;
       const semanticBase=jsonName.replace(/_semantic\.json$/i,"").replace(/\.json$/i,"");
       setMeta(m=>({...m,...metaPatch,filename:(m.filename==="map"&&semanticBase)?semanticBase:m.filename}));
-      const count=nextMaps.length+nextRooms.length+nextCarriers.length+nextObjects.length+nextWaypoints.length+nextGoals.length+Object.keys(nextStartPoses).length;
+      const count=nextMaps.length+nextRooms.length+nextCarriers.length+nextObjects.length+nextEmptySeats.length+nextWaypoints.length+nextGoals.length+Object.keys(nextStartPoses).length;
       setTimeout(()=>{saveSnap();drawOverlayRef.current?.();},0);
       setStatus(`✅ 시맨틱 로드: ${jsonName} (${count}개 항목)`);
       return true;
@@ -4319,6 +4437,13 @@ export default function Nav2MapEditor() {
           polygon:polyWorld(poly),
           _pixel:{polygon:poly}};
       }),
+      empty_seats:emptySeats.map(seat=>{
+        const poly=shapeToPoly(seat)||[];
+        const bb=poly.length?polyBBox(poly):{x:seat.x,y:seat.y,x2:seat.x+(seat.w||0),y2:seat.y+(seat.h||0)};
+        return{id:seat.id,label:seat.label||seat.id,room_id:seat.roomId||null,
+          polygon:polyWorld(poly),bbox:bboxWorld(bb),
+          _pixel:{polygon:poly}};
+      }),
       waypoints:waypoints.map((wp,i)=>{
         const pos=tw(wp.x,wp.y);
         const qz=Math.sin(wp.theta/2),qw=Math.cos(wp.theta/2);
@@ -4338,7 +4463,7 @@ export default function Nav2MapEditor() {
           _pixel:{x:g.x,y:g.y}};
       })
     },null,2);
-  },[maps,rooms,carriers,objects,startPoses,waypoints,goals,meta,canvasSize,toWorld,catalogRooms]);
+  },[maps,rooms,carriers,objects,emptySeats,startPoses,waypoints,goals,meta,canvasSize,toWorld,catalogRooms]);
 
   const saveMapBundle=useCallback(async(defaultBase=meta.filename)=>{
     const c=canvasRef.current;if(!c)return null;
@@ -4510,7 +4635,7 @@ export default function Nav2MapEditor() {
   const effectiveWorkspaceRoot = (workspaceSync.workspaceRoot || DEFAULT_WORKSPACE_ROOT).trim();
   const canSyncWorkspace = workspaceAvailable && !!effectiveWorkspaceRoot && !workspaceBusy;
   const startPoseCount=Object.values(startPoses||{}).filter(Boolean).length;
-  const semanticItemCount=maps.length+rooms.length+carriers.length+objects.length+goals.length+goalList.length+waypoints.length+startPoseCount;
+  const semanticItemCount=maps.length+rooms.length+carriers.length+objects.length+emptySeats.length+goals.length+goalList.length+waypoints.length+startPoseCount;
 
   return(
     <div style={{display:"flex",flexDirection:"column",height:"100vh",background:"#050d1a",color:"#8eb8c8",fontFamily:"'JetBrains Mono','Fira Code',monospace",fontSize:12,overflow:"hidden"}}>
@@ -4959,7 +5084,7 @@ export default function Nav2MapEditor() {
           </div>
           <SemanticPanel
             width={semPanelW}
-            maps={maps} rooms={rooms} carriers={carriers} objects={objects} waypoints={waypoints} goals={goals} goalList={goalList}
+            maps={maps} rooms={rooms} carriers={carriers} objects={objects} emptySeats={emptySeats} waypoints={waypoints} goals={goals} goalList={goalList}
             startPoses={startPoses} startTasks={START_TASKS} setSelectedStartTask={setSelectedStartTask}
             selId={selSemId} setSelId={setSelSemId}
             selWpIdx={selWpIdx} setSelWpIdx={setSelWpIdx}
@@ -4967,6 +5092,7 @@ export default function Nav2MapEditor() {
             onDeleteRoom={id=>{setRooms(p=>p.filter(r=>r.id!==id));if(selSemId===id)setSelSemId(null);}}
             onDeleteCarrier={id=>{setCarriers(p=>p.filter(c=>c.id!==id));if(selSemId===id)setSelSemId(null);}}
             onDeleteObj={id=>{setObjects(p=>p.filter(o=>o.id!==id));if(selSemId===id)setSelSemId(null);}}
+            onDeleteEmptySeat={id=>{setEmptySeats(p=>p.filter(seat=>seat.id!==id));if(selSemId===id)setSelSemId(null);}}
             onDeleteWp={i=>{setWaypoints(p=>p.filter((_,j)=>j!==i));if(selWpIdx===i)setSelWpIdx(null);}}
             onDeleteGoal={id=>{setGoals(p=>p.filter(g=>g.id!==id));if(selSemId===id)setSelSemId(null);}}
             onDeleteStart={task=>{setStartPoseForTask(task||selectedStartTask,null);if(startTaskFromId(startPoses,selSemId))setSelSemId(null);}}
@@ -4980,6 +5106,7 @@ export default function Nav2MapEditor() {
               if(layer==="room") setRooms(p=>p.map(r=>r.id===id?{...r,[field]:value}:r));
               else if(layer==="carrier") setCarriers(p=>p.map(c=>c.id===id?{...c,[field]:value}:c));
               else if(layer==="object") setObjects(p=>p.map(o=>o.id===id?{...o,[field]:value}:o));
+              else if(layer==="emptySeat") setEmptySeats(p=>p.map(seat=>seat.id===id?{...seat,[field]:value}:seat));
               else if(layer==="goal") setGoals(p=>p.map(g=>g.id===id?{...g,[field]:value}:g));
             }}
             onRenameObjId={(oldId,nextRaw)=>{
@@ -4988,6 +5115,7 @@ export default function Nav2MapEditor() {
               const usedIds=[
                 ...maps.map(m=>m.id),...rooms.map(r=>r.id),...carriers.map(c=>c.id),
                 ...objects.filter(o=>o.id!==oldId).map(o=>o.id),
+                ...emptySeats.map(seat=>seat.id),
                 ...goals.map(g=>g.id),...waypoints.map((wp,i)=>wp.id||`w${i+1}`),
                 ...Object.values(startPoses).map(p=>p?.id).filter(Boolean),
               ];
@@ -5001,6 +5129,27 @@ export default function Nav2MapEditor() {
               setGoals(p=>p.map(g=>g.target_id===oldId?{...g,target_id:nextId}:g));
               if(selSemId===oldId)setSelSemId(nextId);
               setStatus(`🔹 오브젝트 ID 변경: ${oldId} → ${nextId}`);
+              return true;
+            }}
+            onRenameEmptySeatId={(oldId,nextRaw)=>{
+              const nextId=String(nextRaw||"").trim();
+              if(!nextId){setStatus("⚠ 빈좌석 ID는 비워둘 수 없습니다");return false;}
+              const usedIds=[
+                ...maps.map(m=>m.id),...rooms.map(r=>r.id),...carriers.map(c=>c.id),...objects.map(o=>o.id),
+                ...emptySeats.filter(seat=>seat.id!==oldId).map(seat=>seat.id),
+                ...goals.map(g=>g.id),...waypoints.map((wp,i)=>wp.id||`w${i+1}`),
+                ...Object.values(startPoses).map(p=>p?.id).filter(Boolean),
+              ];
+              if(usedIds.includes(nextId)){
+                setStatus(`⚠ 이미 있는 ID: ${nextId}`);
+                return false;
+              }
+              const idMatch=nextId.match(/^e(\d+)$/);
+              if(idMatch)_eIdx=Math.max(_eIdx,Number(idMatch[1]));
+              setEmptySeats(p=>p.map(seat=>seat.id===oldId?{...seat,id:nextId,label:seat.label===oldId?nextId:seat.label}:seat));
+              setGoals(p=>p.map(g=>g.target_id===oldId?{...g,target_id:nextId}:g));
+              if(selSemId===oldId)setSelSemId(nextId);
+              setStatus(`▧ 빈좌석 ID 변경: ${oldId} → ${nextId}`);
               return true;
             }}
             onRenameGoalId={(oldId,nextRaw)=>{
@@ -5022,7 +5171,7 @@ export default function Nav2MapEditor() {
               const nextId=String(nextRaw||"").trim();
               if(!nextId){setStatus("⚠ 시작점 ID는 비워둘 수 없습니다");return false;}
               const usedIds=[
-                ...maps.map(m=>m.id),...rooms.map(r=>r.id),...carriers.map(c=>c.id),...objects.map(o=>o.id),
+                ...maps.map(m=>m.id),...rooms.map(r=>r.id),...carriers.map(c=>c.id),...objects.map(o=>o.id),...emptySeats.map(seat=>seat.id),
                 ...goals.map(g=>g.id),...waypoints.map((wp,i)=>wp.id||`w${i+1}`),
                 ...Object.entries(startPoses).filter(([t])=>t!==key).map(([,p])=>p?.id).filter(Boolean),
               ];
@@ -5050,7 +5199,7 @@ export default function Nav2MapEditor() {
       <div style={{padding:"3px 12px",background:"#030a14",borderTop:"1px solid rgba(0,212,255,0.07)",display:"flex",gap:12,alignItems:"center",flexShrink:0,fontSize:11,color:"rgba(0,212,255,0.28)"}}>
         <span style={{color:"rgba(0,212,255,0.5)"}}>{status}</span>
         {mapLoaded&&<><span>{canvasSize.w}×{canvasSize.h}px</span><span>{meta.resolution}m/px</span></>}
-        <span style={{marginLeft:"auto"}}>B/E/L/R/C/F=편집 · S=시작 · W=WP · 1/2=방 · 3/4=캐리어 · 5/6=객체 · 7=포인트 · 8/0=선택 · 9=골 · Backspace/Del=삭제</span>
+        <span style={{marginLeft:"auto"}}>B/E/L/R/C/F=편집 · S=시작 · W=WP · Q=빈좌석 · 1/2=방 · 3/4=캐리어 · 5/6=객체 · 7=포인트 · 8/0=선택 · 9=골 · Backspace/Del=삭제</span>
       </div>
 
       {/* ── NEW MAP DIALOG ── */}
@@ -5145,7 +5294,7 @@ export default function Nav2MapEditor() {
       {semDlg&&<SemanticDialog mode={semDlg.mode} typeOptions={typeOptions} onConfirm={onSemConfirm} onCancel={()=>setSemDlg(null)}/>}
 
       {/* ── GOAL DIALOG ── */}
-      {goalDlg&&<GoalDialog rooms={rooms} carriers={carriers} objects={objects} goalList={goalList} roomId={goalDlg.roomId} goalId={goalDlg.goalId} typeOptions={typeOptions} onConfirm={onGoalConfirm} onCancel={()=>{
+      {goalDlg&&<GoalDialog rooms={rooms} carriers={carriers} objects={objects} emptySeats={emptySeats} goalList={goalList} roomId={goalDlg.roomId} goalId={goalDlg.goalId} typeOptions={typeOptions} onConfirm={onGoalConfirm} onCancel={()=>{
         // Remove the goal that was placed during drag
         if(goalDlg.goalId) setGoals(p=>p.filter(g=>g.id!==goalDlg.goalId));
         setGoalDlg(null);
