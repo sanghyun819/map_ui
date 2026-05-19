@@ -161,7 +161,10 @@ async function nativeOpen(filters, pickPath) {
 
 // ─── Nav2 pixel constants ──────────────────────────────────────────────────────
 const PX_OCCUPIED = 0, PX_FREE = 254, PX_UNKNOWN = 205;
-const SNAP_RADIUS = 10;
+const SNAP_RADIUS = 5;
+const POLY_VERTEX_RADIUS = 1.4;
+const POLY_FIRST_VERTEX_RADIUS = 2.1;
+const POLY_SNAP_RING_RADIUS = 4.5;
 const START_TASKS = ["HRI","PnP","GPSR","DL","Restaurant"];
 const DEFAULT_START_TASK = START_TASKS[0];
 const QUICK_MAP_DIR = "/home/nvidia/rby1_nav2/src/rby1_nav2/maps";
@@ -685,7 +688,8 @@ const SEM_TOOL_GROUPS=[
     {id:"semPoint",       icon:"◎", label:"포인트",  key:"7"},
   ]},
   {label:"빈좌석",  color:"#00e676", tools:[
-    {id:"semPolyEmptySeat",icon:"▧", label:"다각형",  key:"Q"},
+    {id:"semRectEmptySeat",icon:"▭", label:"사각",    key:""},
+    {id:"semPolyEmptySeat",icon:"⬡", label:"다각형",  key:"Q"},
   ]},
 ];
 const SEM_EXTRA_TOOLS=[
@@ -808,13 +812,13 @@ function reprojectPoseItem(item,fromMeta,fromSize,toMeta,toSize){
 
 // ─── Semantic type dialog ──────────────────────────────────────────────────────
 function SemanticDialog({mode, typeOptions, onConfirm, onCancel}) {
-  const typesList = mode==="map" ? typeOptions.maps : mode==="room" ? typeOptions.rooms : mode==="carrier" ? typeOptions.carriers : typeOptions.objects;
+  const typesList = mode==="map" ? typeOptions.maps : mode==="room" ? typeOptions.rooms : mode==="carrier" ? typeOptions.carriers : mode==="emptySeat" ? [EMPTY_SEAT_TYPE] : typeOptions.objects;
   const [type,setType]=useState(typesList[0].id);
   const [label,setLabel]=useState("");
   const [objectId,setObjectId]=useState("");
   const selT=typesList.find(t=>t.id===type);
-  const title = mode==="map" ? "🗺 맵 영역 추가" : mode==="room" ? "🏠 방/영역 추가" : mode==="carrier" ? "📦 캐리어 추가" : "🔹 오브젝트 추가";
-  const confirm=()=>onConfirm(type,label||selT?.label,mode==="object"?objectId:"");
+  const title = mode==="map" ? "🗺 맵 영역 추가" : mode==="room" ? "🏠 방/영역 추가" : mode==="carrier" ? "📦 캐리어 추가" : mode==="emptySeat" ? "▧ 빈좌석 추가" : "🔹 오브젝트 추가";
+  const confirm=()=>onConfirm(type,mode==="emptySeat"?label:(label||selT?.label),mode==="object"?objectId:"");
   return(
     <div style={MODAL}>
       <div style={{...MBOX,minWidth:400}}>
@@ -1545,6 +1549,12 @@ function SemanticPanel({width=260,maps,rooms,carriers,objects,emptySeats,waypoin
             <div style={{display:"flex",alignItems:"center",gap:4}}>
               <span style={{fontSize:9,color:"rgba(0,230,118,0.5)",whiteSpace:"nowrap"}}>ID</span>
               <CommitInput value={seat.id||""} onCommit={next=>onRenameEmptySeatId?.(seat.id,next)}
+                style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10,borderColor:"rgba(0,230,118,0.24)"}}/>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:4}}>
+              <span style={{fontSize:9,color:"rgba(0,230,118,0.5)",whiteSpace:"nowrap"}}>라벨</span>
+              <input value={seat.label||""} onChange={e=>onReassign("emptySeat",seat.id,"label",e.target.value)}
+                onClick={e=>e.stopPropagation()}
                 style={{...INPUT,flex:1,padding:"2px 4px",fontSize:10,borderColor:"rgba(0,230,118,0.24)"}}/>
             </div>
             {rooms.length>0&&(
@@ -2929,20 +2939,20 @@ export default function Nav2MapEditor() {
 
       pverts.forEach((p,i)=>{
         const isFirst=i===0;
-        ctx.beginPath();ctx.arc(p.x+.5,p.y+.5,isFirst?3.5:2.5,0,Math.PI*2);
+        ctx.beginPath();ctx.arc(p.x+.5,p.y+.5,isFirst?POLY_FIRST_VERTEX_RADIUS:POLY_VERTEX_RADIUS,0,Math.PI*2);
         ctx.fillStyle=polySnap&&isFirst?"#00ff88":accentColor;
         ctx.fill();
-        ctx.strokeStyle="#fff";ctx.lineWidth=0.8;ctx.stroke();
-        ctx.font="bold 6px monospace";ctx.fillStyle="#fff";ctx.textAlign="left";ctx.textBaseline="top";
-        ctx.fillText(i+1,p.x+4,p.y-7);
+        ctx.strokeStyle="#fff";ctx.lineWidth=0.5;ctx.stroke();
+        ctx.font="bold 5px monospace";ctx.fillStyle="#fff";ctx.textAlign="left";ctx.textBaseline="top";
+        ctx.fillText(i+1,p.x+3,p.y-6);
       });
 
       if(polySnap&&pverts.length>=3){
-        ctx.beginPath();ctx.arc(pverts[0].x+.5,pverts[0].y+.5,7,0,Math.PI*2);
-        ctx.strokeStyle="#00ff88";ctx.lineWidth=1.2;ctx.setLineDash([3,2]);ctx.stroke();
+        ctx.beginPath();ctx.arc(pverts[0].x+.5,pverts[0].y+.5,POLY_SNAP_RING_RADIUS,0,Math.PI*2);
+        ctx.strokeStyle="#00ff88";ctx.lineWidth=0.9;ctx.setLineDash([2,2]);ctx.stroke();
         ctx.setLineDash([]);
-        ctx.font="bold 7px monospace";ctx.fillStyle="#00ff88";ctx.textAlign="center";ctx.textBaseline="bottom";
-        ctx.fillText("닫기",pverts[0].x,pverts[0].y-10);
+        ctx.font="bold 6px monospace";ctx.fillStyle="#00ff88";ctx.textAlign="center";ctx.textBaseline="bottom";
+        ctx.fillText("닫기",pverts[0].x,pverts[0].y-7);
       }
 
       ctx.font="bold 8px monospace";ctx.textAlign="left";ctx.textBaseline="top";
@@ -2953,11 +2963,11 @@ export default function Nav2MapEditor() {
     }
 
     // ── Rect preview for semRect tools ──
-    if(["semRectMap","semRectRoom","semRectCarrier","semRectObj"].includes(tool)&&shapeStart.current&&cursorCanvasRef.current){
+    if(["semRectMap","semRectRoom","semRectCarrier","semRectObj","semRectEmptySeat"].includes(tool)&&shapeStart.current&&cursorCanvasRef.current){
       const s=shapeStart.current,e=cursorCanvasRef.current;
       const x=Math.min(s.x,e.x),y=Math.min(s.y,e.y),w=Math.abs(e.x-s.x),h=Math.abs(e.y-s.y);
       if(w>1&&h>1){
-        const col=tool==="semRectMap"?"#90a4ae":tool==="semRectRoom"?"#00d4ff":tool==="semRectCarrier"?"#4fc3f7":"#ffaa00";
+        const col=tool==="semRectMap"?"#90a4ae":tool==="semRectRoom"?"#00d4ff":tool==="semRectCarrier"?"#4fc3f7":tool==="semRectEmptySeat"?"#00e676":"#ffaa00";
         ctx.save();ctx.strokeStyle=col;ctx.lineWidth=1.5;ctx.setLineDash([6,3]);
         ctx.fillStyle=hexRgba(col,.06);ctx.fillRect(x,y,w,h);ctx.strokeRect(x+.5,y+.5,w,h);
         ctx.restore();
@@ -2981,24 +2991,10 @@ export default function Nav2MapEditor() {
   // ── Confirm polygon finish ──
   const finishPolygon=useCallback((verts)=>{
     if(verts.length<3)return;
-    if(tool==="semPolyEmptySeat"){
-      const id=euid();
-      const newSeat={id,label:id,color:EMPTY_SEAT_TYPE.color,poly:verts};
-      const parentRoom=rooms.find(r=>{
-        const rp=shapeToPoly(r)||[];
-        return rp.length>0&&polyMostlyInside(rp,verts,0.8);
-      });
-      if(parentRoom)newSeat.roomId=parentRoom.id;
-      setEmptySeats(p=>[...p,newSeat]);
-      setSelSemId(id);setSelWpIdx(null);
-      setStatus(`▧ 빈좌석 추가: ${id}${parentRoom?` (${parentRoom.label} 내)`:""}`);
-      setPolyVerts([]);setPolySnap(false);
-      return;
-    }
-    const mode=tool==="semPolyMap"?"map":tool==="semPolyRoom"?"room":tool==="semPolyCarrier"?"carrier":"object";
+    const mode=tool==="semPolyMap"?"map":tool==="semPolyRoom"?"room":tool==="semPolyCarrier"?"carrier":tool==="semPolyEmptySeat"?"emptySeat":"object";
     setSemDlg({mode, poly:verts});
     setPolyVerts([]);setPolySnap(false);
-  },[tool,rooms]);
+  },[tool]);
 
   // ── Mouse Down ──
   const onMouseDown=useCallback((e)=>{
@@ -3027,7 +3023,7 @@ export default function Nav2MapEditor() {
     }
 
     // ── Semantic rect tools ──
-    if(tool==="semRectMap"||tool==="semRectRoom"||tool==="semRectCarrier"||tool==="semRectObj"){
+    if(tool==="semRectMap"||tool==="semRectRoom"||tool==="semRectCarrier"||tool==="semRectObj"||tool==="semRectEmptySeat"){
       if(!inBounds(pt))return;
       isDrawing.current=true;shapeStart.current=pt;lastPt.current=pt;return;
     }
@@ -3195,7 +3191,7 @@ export default function Nav2MapEditor() {
     }
 
     // Always redraw overlay for poly/rect preview
-    if(["semPolyMap","semPolyRoom","semPolyCarrier","semPolyObj","semPolyEmptySeat","semRectMap","semRectRoom","semRectCarrier","semRectObj"].includes(tool)){
+    if(["semPolyMap","semPolyRoom","semPolyCarrier","semPolyObj","semPolyEmptySeat","semRectMap","semRectRoom","semRectCarrier","semRectObj","semRectEmptySeat"].includes(tool)){
       drawOverlay();
     }
 
@@ -3313,11 +3309,11 @@ export default function Nav2MapEditor() {
     if(["brush","eraser","line","rect","circle"].includes(tool))saveSnap();
 
     // Semantic rect complete
-    if((tool==="semRectMap"||tool==="semRectRoom"||tool==="semRectCarrier"||tool==="semRectObj")&&shapeStart.current&&pt){
+    if((tool==="semRectMap"||tool==="semRectRoom"||tool==="semRectCarrier"||tool==="semRectObj"||tool==="semRectEmptySeat")&&shapeStart.current&&pt){
       const x=Math.min(shapeStart.current.x,pt.x),y=Math.min(shapeStart.current.y,pt.y);
       const w=Math.abs(pt.x-shapeStart.current.x),h=Math.abs(pt.y-shapeStart.current.y);
       if(w>5&&h>5){
-        const mode=tool==="semRectMap"?"map":tool==="semRectRoom"?"room":tool==="semRectCarrier"?"carrier":"object";
+        const mode=tool==="semRectMap"?"map":tool==="semRectRoom"?"room":tool==="semRectCarrier"?"carrier":tool==="semRectEmptySeat"?"emptySeat":"object";
         setSemDlg({mode,rect:{x,y,w,h}});
       }
     }
@@ -3362,14 +3358,32 @@ export default function Nav2MapEditor() {
   const onSemConfirm=useCallback((type,label,requestedId="")=>{
     if(!semDlg)return;
     const {mode,rect,poly,point,pt}=semDlg;
+    const itemInsideParent=(parent,item,threshold=0.8)=>{
+      const parentPoly=shapeToPoly(parent)||[];
+      if(parentPoly.length===0)return false;
+      if(item?.point||item?.x!=null&&item?.y!=null&&item?.w==null&&!item?.poly){
+        return pointInPoly(item.x,item.y,parentPoly);
+      }
+      const childPoly=shapeToPoly(item)||[];
+      return childPoly.length>0&&polyMostlyInside(parentPoly,childPoly,threshold);
+    };
+    const currentParentContains=(parents,parentId,item)=>{
+      const parent=parents.find(p=>p.id===parentId);
+      return parent?itemInsideParent(parent,item):false;
+    };
 
     if(mode==="map"){
       const mt=typeOptions.maps.find(t=>t.id===type)||typeOptions.maps[typeOptions.maps.length-1];
       const newMap=poly
         ?{id:muid(),type,label,color:mt.color,poly}
         :{id:muid(),type,label,color:mt.color,...rect};
+      const adoptedRoomIds=rooms
+        .filter(r=>itemInsideParent(newMap,r)&&(!r.mapId||!currentParentContains(maps,r.mapId,r)))
+        .map(r=>r.id);
+      const adoptedRoomSet=new Set(adoptedRoomIds);
+      if(adoptedRoomSet.size>0)setRooms(p=>p.map(r=>adoptedRoomSet.has(r.id)?{...r,mapId:newMap.id}:r));
       setMaps(p=>[...p,newMap]);setSelSemId(newMap.id);
-      setStatus(`🗺 맵 영역 추가: ${label} (${poly?`${poly.length}꼭짓점`:`${rect.w}×${rect.h}px`})`);
+      setStatus(`🗺 맵 영역 추가: ${label} (${poly?`${poly.length}꼭짓점`:`${rect.w}×${rect.h}px`})${adoptedRoomSet.size?` · ${adoptedRoomSet.size}방 포함`:""}`);
     } else if(mode==="room"){
       const rt=typeOptions.rooms.find(t=>t.id===type)||typeOptions.rooms[typeOptions.rooms.length-1];
       const newRoom=poly
@@ -3382,8 +3396,29 @@ export default function Nav2MapEditor() {
         return mp.length>0&&polyMostlyInside(mp,rpoly,0.8);
       });
       if(parentMap)newRoom.mapId=parentMap.id;
+      const adoptedCarrierIds=carriers
+        .filter(c=>itemInsideParent(newRoom,c)&&(!c.roomId||!currentParentContains(rooms,c.roomId,c)))
+        .map(c=>c.id);
+      const adoptedEmptySeatIds=emptySeats
+        .filter(seat=>itemInsideParent(newRoom,seat)&&(!seat.roomId||!currentParentContains(rooms,seat.roomId,seat)))
+        .map(seat=>seat.id);
+      const adoptedObjIds=objects
+        .filter(o=>itemInsideParent(newRoom,o)&&(!o.roomId||!currentParentContains(rooms,o.roomId,o)))
+        .map(o=>o.id);
+      const adoptedGoalIds=goals
+        .filter(g=>itemInsideParent(newRoom,g)&&(!g.room_id||!currentParentContains(rooms,g.room_id,g)))
+        .map(g=>g.id);
+      const adoptedCarrierSet=new Set(adoptedCarrierIds);
+      const adoptedEmptySeatSet=new Set(adoptedEmptySeatIds);
+      const adoptedObjSet=new Set(adoptedObjIds);
+      const adoptedGoalSet=new Set(adoptedGoalIds);
       setRooms(p=>[...p,newRoom]);setSelSemId(newRoom.id);
-      setStatus(`🏠 방 추가: ${label}${parentMap?` (${parentMap.label} 내)`:""} (${poly?`${poly.length}꼭짓점`:`${rect.w}×${rect.h}px`})`);
+      if(adoptedCarrierSet.size>0)setCarriers(p=>p.map(c=>adoptedCarrierSet.has(c.id)?{...c,roomId:newRoom.id}:c));
+      if(adoptedEmptySeatSet.size>0)setEmptySeats(p=>p.map(seat=>adoptedEmptySeatSet.has(seat.id)?{...seat,roomId:newRoom.id}:seat));
+      if(adoptedObjSet.size>0)setObjects(p=>p.map(o=>adoptedObjSet.has(o.id)?{...o,roomId:newRoom.id}:o));
+      if(adoptedGoalSet.size>0)setGoals(p=>p.map(g=>adoptedGoalSet.has(g.id)?{...g,room_id:newRoom.id}:g));
+      const adoptedCount=adoptedCarrierSet.size+adoptedEmptySeatSet.size+adoptedObjSet.size+adoptedGoalSet.size;
+      setStatus(`🏠 방 추가: ${label}${parentMap?` (${parentMap.label} 내)`:""} (${poly?`${poly.length}꼭짓점`:`${rect.w}×${rect.h}px`})${adoptedCount?` · ${adoptedCount}개 하위 항목 포함`:""}`);
     } else if(mode==="carrier"){
       const ct=typeOptions.carriers.find(t=>t.id===type)||typeOptions.carriers[typeOptions.carriers.length-1];
       const newCarrier=poly
@@ -3396,8 +3431,23 @@ export default function Nav2MapEditor() {
         return rp.length>0&&polyMostlyInside(rp,cpoly,0.8);
       });
       if(parentRoom)newCarrier.roomId=parentRoom.id;
+      const adoptedObjIds=objects
+        .filter(o=>itemInsideParent(newCarrier,o)&&(!o.carrierId||!currentParentContains(carriers,o.carrierId,o)))
+        .map(o=>o.id);
+      const adoptedObjSet=new Set(adoptedObjIds);
       setCarriers(p=>[...p,newCarrier]);setSelSemId(newCarrier.id);
-      setStatus(`📦 캐리어 추가: ${label}${parentRoom?` (${parentRoom.label} 내)`:""}`);
+      if(adoptedObjSet.size>0)setObjects(p=>p.map(o=>adoptedObjSet.has(o.id)?{...o,carrierId:newCarrier.id,roomId:o.roomId||newCarrier.roomId||null}:o));
+      setStatus(`📦 캐리어 추가: ${label}${parentRoom?` (${parentRoom.label} 내)`:""}${adoptedObjSet.size?` · ${adoptedObjSet.size}객체 포함`:""}`);
+    } else if(mode==="emptySeat"){
+      const id=euid();
+      const seatLabel=String(label||"").trim()||id;
+      const newSeat=poly
+        ?{id,type:type||EMPTY_SEAT_TYPE.id,label:seatLabel,color:EMPTY_SEAT_TYPE.color,poly}
+        :{id,type:type||EMPTY_SEAT_TYPE.id,label:seatLabel,color:EMPTY_SEAT_TYPE.color,...rect};
+      const parentRoom=rooms.find(r=>itemInsideParent(r,newSeat));
+      if(parentRoom)newSeat.roomId=parentRoom.id;
+      setEmptySeats(p=>[...p,newSeat]);setSelSemId(newSeat.id);
+      setStatus(`▧ 빈좌석 추가: ${seatLabel} (${id})${parentRoom?` · ${parentRoom.label} 내`:""}`);
     } else {
       const ot=typeOptions.objects.find(t=>t.id===type)||typeOptions.objects[typeOptions.objects.length-1];
       const isPoint=!!point;
@@ -3704,6 +3754,7 @@ export default function Nav2MapEditor() {
           const id=String(seat.id||`e${i}`);
           return {
             id,
+            type:seat.type||EMPTY_SEAT_TYPE.id,
             label:String(seat.label||id),
             color:seat.color||EMPTY_SEAT_TYPE.color,
             roomId:seat.roomId||seat.room_id||null,
@@ -4440,7 +4491,7 @@ export default function Nav2MapEditor() {
       empty_seats:emptySeats.map(seat=>{
         const poly=shapeToPoly(seat)||[];
         const bb=poly.length?polyBBox(poly):{x:seat.x,y:seat.y,x2:seat.x+(seat.w||0),y2:seat.y+(seat.h||0)};
-        return{id:seat.id,label:seat.label||seat.id,room_id:seat.roomId||null,
+        return{id:seat.id,type:seat.type||EMPTY_SEAT_TYPE.id,label:seat.label||seat.id,room_id:seat.roomId||null,
           polygon:polyWorld(poly),bbox:bboxWorld(bb),
           _pixel:{polygon:poly}};
       }),
