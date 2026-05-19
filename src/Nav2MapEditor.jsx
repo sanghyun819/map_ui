@@ -815,10 +815,12 @@ function SemanticDialog({mode, typeOptions, onConfirm, onCancel}) {
   const typesList = mode==="map" ? typeOptions.maps : mode==="room" ? typeOptions.rooms : mode==="carrier" ? typeOptions.carriers : mode==="emptySeat" ? [EMPTY_SEAT_TYPE] : typeOptions.objects;
   const [type,setType]=useState(typesList[0].id);
   const [label,setLabel]=useState("");
-  const [objectId,setObjectId]=useState("");
+  const [semanticId,setSemanticId]=useState("");
   const selT=typesList.find(t=>t.id===type);
   const title = mode==="map" ? "🗺 맵 영역 추가" : mode==="room" ? "🏠 방/영역 추가" : mode==="carrier" ? "📦 캐리어 추가" : mode==="emptySeat" ? "▧ 빈좌석 추가" : "🔹 오브젝트 추가";
-  const confirm=()=>onConfirm(type,mode==="emptySeat"?label:(label||selT?.label),mode==="object"?objectId:"");
+  const hasOptionalId=mode==="carrier"||mode==="object"||mode==="emptySeat";
+  const idLabel=mode==="carrier"?"캐리어 ID (선택)":mode==="emptySeat"?"빈좌석 ID (선택)":"오브젝트 ID (선택)";
+  const confirm=()=>onConfirm(type,mode==="emptySeat"?label:(label||selT?.label),hasOptionalId?semanticId:"");
   return(
     <div style={MODAL}>
       <div style={{...MBOX,minWidth:400}}>
@@ -846,10 +848,10 @@ function SemanticDialog({mode, typeOptions, onConfirm, onCancel}) {
             onKeyDown={e=>e.key==="Enter"&&confirm()}
             style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:13}}/>
         </div>
-        {mode==="object"&&(
+        {hasOptionalId&&(
           <div style={{marginBottom:18}}>
-            <div style={{fontSize:10,color:"rgba(0,212,255,0.5)",marginBottom:6,letterSpacing:1}}>오브젝트 ID (선택)</div>
-            <input placeholder="비워두면 자동 ID" value={objectId} onChange={e=>setObjectId(e.target.value)}
+            <div style={{fontSize:10,color:"rgba(0,212,255,0.5)",marginBottom:6,letterSpacing:1}}>{idLabel}</div>
+            <input placeholder="비워두면 자동 ID" value={semanticId} onChange={e=>setSemanticId(e.target.value)}
               onKeyDown={e=>e.key==="Enter"&&confirm()}
               style={{...INPUT,width:"100%",boxSizing:"border-box",fontSize:13}}/>
           </div>
@@ -3371,6 +3373,19 @@ export default function Nav2MapEditor() {
       const parent=parents.find(p=>p.id===parentId);
       return parent?itemInsideParent(parent,item):false;
     };
+    const usedIds=()=>[
+      ...maps.map(m=>m.id),...rooms.map(r=>r.id),...carriers.map(c=>c.id),...objects.map(o=>o.id),...emptySeats.map(seat=>seat.id),
+      ...goals.map(g=>g.id),...waypoints.map((wp,i)=>wp.id||`w${i+1}`),
+      ...Object.values(startPoses).map(p=>p?.id).filter(Boolean),
+    ];
+    const requestedSemanticId=String(requestedId||"").trim();
+    const rejectDuplicateId=(id)=>{
+      if(id&&usedIds().includes(id)){
+        setStatus(`⚠ 이미 있는 ID: ${id}`);
+        return true;
+      }
+      return false;
+    };
 
     if(mode==="map"){
       const mt=typeOptions.maps.find(t=>t.id===type)||typeOptions.maps[typeOptions.maps.length-1];
@@ -3421,9 +3436,13 @@ export default function Nav2MapEditor() {
       setStatus(`🏠 방 추가: ${label}${parentMap?` (${parentMap.label} 내)`:""} (${poly?`${poly.length}꼭짓점`:`${rect.w}×${rect.h}px`})${adoptedCount?` · ${adoptedCount}개 하위 항목 포함`:""}`);
     } else if(mode==="carrier"){
       const ct=typeOptions.carriers.find(t=>t.id===type)||typeOptions.carriers[typeOptions.carriers.length-1];
+      if(rejectDuplicateId(requestedSemanticId))return false;
+      const idMatch=requestedSemanticId.match(/^c(\d+)$/);
+      if(idMatch)_cIdx=Math.max(_cIdx,Number(idMatch[1]));
+      const id=requestedSemanticId||cuid();
       const newCarrier=poly
-        ?{id:cuid(),type,label,color:ct.color,z:0,poly}
-        :{id:cuid(),type,label,color:ct.color,z:0,...rect};
+        ?{id,type,label,color:ct.color,z:0,poly}
+        :{id,type,label,color:ct.color,z:0,...rect};
       // Auto room assignment (80% overlap)
       const cpoly=shapeToPoly(newCarrier)||[];
       const parentRoom=rooms.find(r=>{
@@ -3439,7 +3458,10 @@ export default function Nav2MapEditor() {
       if(adoptedObjSet.size>0)setObjects(p=>p.map(o=>adoptedObjSet.has(o.id)?{...o,carrierId:newCarrier.id,roomId:o.roomId||newCarrier.roomId||null}:o));
       setStatus(`📦 캐리어 추가: ${label}${parentRoom?` (${parentRoom.label} 내)`:""}${adoptedObjSet.size?` · ${adoptedObjSet.size}객체 포함`:""}`);
     } else if(mode==="emptySeat"){
-      const id=euid();
+      if(rejectDuplicateId(requestedSemanticId))return false;
+      const idMatch=requestedSemanticId.match(/^e(\d+)$/);
+      if(idMatch)_eIdx=Math.max(_eIdx,Number(idMatch[1]));
+      const id=requestedSemanticId||euid();
       const seatLabel=String(label||"").trim()||id;
       const newSeat=poly
         ?{id,type:type||EMPTY_SEAT_TYPE.id,label:seatLabel,color:EMPTY_SEAT_TYPE.color,poly}
@@ -3451,19 +3473,10 @@ export default function Nav2MapEditor() {
     } else {
       const ot=typeOptions.objects.find(t=>t.id===type)||typeOptions.objects[typeOptions.objects.length-1];
       const isPoint=!!point;
-      const objectId=String(requestedId||"").trim();
-      const usedIds=[
-        ...maps.map(m=>m.id),...rooms.map(r=>r.id),...carriers.map(c=>c.id),...objects.map(o=>o.id),...emptySeats.map(seat=>seat.id),
-        ...goals.map(g=>g.id),...waypoints.map((wp,i)=>wp.id||`w${i+1}`),
-        ...Object.values(startPoses).map(p=>p?.id).filter(Boolean),
-      ];
-      if(objectId&&usedIds.includes(objectId)){
-        setStatus(`⚠ 이미 있는 ID: ${objectId}`);
-        return false;
-      }
-      const idMatch=objectId.match(/^o(\d+)$/);
+      if(rejectDuplicateId(requestedSemanticId))return false;
+      const idMatch=requestedSemanticId.match(/^o(\d+)$/);
       if(idMatch)_oIdx=Math.max(_oIdx,Number(idMatch[1]));
-      const id=objectId||ouid();
+      const id=requestedSemanticId||ouid();
       const newObj=isPoint
         ?{id,type,label,color:ot.color,point:true,x:pt?pt.x:poly?polyCentroid(poly).x:rect.x+rect.w/2,y:pt?pt.y:poly?polyCentroid(poly).y:rect.y+rect.h/2}
         :poly
