@@ -17,7 +17,7 @@
     "electron:build": "vite build && electron-builder",
     "electron:preview": "vite build && electron .",
     "robot:server": "node server/robot-backend.cjs",
-    "robot:dev": "concurrently -k \"cross-env VITE_ROBOT_BACKEND=1 vite --host 0.0.0.0 --port 5173\" \"node server/robot-backend.cjs\""
+    "robot:dev": "concurrently -k \"cross-env VITE_ROBOT_BACKEND=1 VITE_USE_POLLING=1 vite --host 0.0.0.0 --port 5173\" \"node server/robot-backend.cjs\""
   },
   "dependencies": {
     "react": "^19.2.0",
