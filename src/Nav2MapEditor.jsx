@@ -3969,6 +3969,7 @@ export default function Nav2MapEditor() {
   const handleSemanticOpen=useCallback(async()=>{
     if(!hostAPI?.openFileDialog){setStatus("⚠ semantic JSON 열기는 Electron 또는 robot backend에서만 가능합니다");return;}
     const filePath=await pickHostPath({
+      defaultPath:DEFAULT_MAP_SEARCH_DIR,
       filters:[{name:"Semantic JSON",extensions:["json"]},{name:"All files",extensions:["*"]}],
       properties:["openFile"],
     });
@@ -4291,7 +4292,9 @@ export default function Nav2MapEditor() {
 
   const savePGM=async ()=>{
     const c=canvasRef.current;if(!c)return;
-    await nativeSave(`${meta.filename}.pgm`, [{ name: "PGM", extensions: ["pgm"] }], canvasToPGM(c), null, pickHostPath);
+    const base=cleanMapBaseName(meta.filename||"map")||"map";
+    const defaultName=hasHostAPI?`${DEFAULT_MAP_SEARCH_DIR}/${base}.pgm`:`${base}.pgm`;
+    await nativeSave(defaultName, [{ name: "PGM", extensions: ["pgm"] }], canvasToPGM(c), null, pickHostPath);
     setStatus("💾 PGM 저장 완료");
   };
 
@@ -4456,6 +4459,7 @@ export default function Nav2MapEditor() {
     if(!hostAPI?.openFileDialog){setStatus("⚠ bag 실행은 Electron 또는 robot backend에서만 가능합니다");return;}
     const selected=await pickHostPath({
       title:"ROS2 bag 폴더 선택",
+      defaultPath:bagPath||DEFAULT_BAG_RECORD_DIR,
       properties:["openDirectory"],
     });
     if(selected){
@@ -4465,7 +4469,7 @@ export default function Nav2MapEditor() {
         setBagDuration(Number.isFinite(info?.duration)?info.duration:0);
       }catch(e){setBagDuration(0);}
     }
-  },[pickHostPath]);
+  },[bagPath,pickHostPath]);
 
   const chooseBagRecordDir=useCallback(async()=>{
     if(!hostAPI?.openFileDialog){setStatus("⚠ bag 저장 폴더 선택은 Electron 또는 robot backend에서만 가능합니다");return;}
@@ -5422,7 +5426,11 @@ export default function Nav2MapEditor() {
             setWaypoints={setWaypoints}
             onImportJSON={hasHostAPI?handleSemanticOpen:null}
             onImportFile={!hasHostAPI?handleSemanticFile:null}
-            onExportJSON={async()=>await nativeSave(`${meta.filename}_semantic.json`,[{name:"JSON",extensions:["json"]}],buildSemanticJSON(),"utf-8",pickHostPath)}
+            onExportJSON={async()=>{
+              const base=cleanMapBaseName(meta.filename||"map")||"map";
+              const defaultName=hasHostAPI?`${DEFAULT_MAP_SEARCH_DIR}/${base}_semantic.json`:`${base}_semantic.json`;
+              await nativeSave(defaultName,[{name:"JSON",extensions:["json"]}],buildSemanticJSON(),"utf-8",pickHostPath);
+            }}
             toWorld={toWorld} resolution={meta.resolution}
             typeOptions={typeOptions}
           />
