@@ -77,7 +77,7 @@ const THOR_DEFAULTS = {
   user: process.env.THOR_USER || "thor",
   password: process.env.THOR_PASSWORD || "thor",
   destDir: process.env.THOR_SEMANTIC_DIR || "/home/thor/bt_ws/map_json",
-  mdDir: process.env.THOR_MD_DIR || "/home/thor/inha_ws/arena_info/InhaDreamOpen2026",
+  mdDir: process.env.THOR_MD_DIR || "/home/thor/inha_ws/arena_info",
 };
 
 function runShellCommand(command, options = {}) {

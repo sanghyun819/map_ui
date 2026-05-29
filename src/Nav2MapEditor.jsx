@@ -174,7 +174,7 @@ const QUICK_MAP_NAMES = {1:"map_first",2:"map_second"};
 const DEFAULT_WORKSPACE_ROOT = "/home/nvidia/rby1_nav2";
 const DEFAULT_MAP_SEARCH_DIR = "/home/nvidia/rby1_nav2/src/rby1_nav2/maps";
 const DEFAULT_BAG_RECORD_DIR = "/home/nvidia/rby1_nav2/src/rby1_nav2/bag";
-const DEFAULT_THOR_MD_DIR = import.meta.env.VITE_THOR_MD_DIR || "/home/thor/inha_ws/arena_info/InhaDreamOpen2026";
+const DEFAULT_THOR_MD_DIR = import.meta.env.VITE_THOR_MD_DIR || "/home/thor/inha_ws/arena_info";
 const DEFAULT_BAG_RECORD_TOPICS = [
   "/tf",
   "/odom",
