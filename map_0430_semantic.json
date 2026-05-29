@@ -1,0 +1,89 @@
+{
+  "metadata": {
+    "resolution": 0.05,
+    "origin": [
+      -4.81,
+      -3.48,
+      0
+    ],
+    "image_size": {
+      "w": 254,
+      "h": 262
+    },
+    "created": "2026-05-02T04:58:57.918Z"
+  },
+  "start_pose": null,
+  "maps": [],
+  "rooms": [],
+  "carriers": [],
+  "objects": [],
+  "waypoints": [],
+  "goals": [
+    {
+      "id": "g1",
+      "label": "door_pose",
+      "room_id": null,
+      "target_id": null,
+      "position": {
+        "x": 5.25,
+        "y": 3.33,
+        "z": 0
+      },
+      "orientation": {
+        "x": 0,
+        "y": 0,
+        "z": -0.14,
+        "w": 0.99
+      },
+      "theta_rad": -0.28,
+      "_pixel": {
+        "x": 201,
+        "y": 126
+      }
+    },
+    {
+      "id": "g2",
+      "label": "init_pose",
+      "room_id": null,
+      "target_id": null,
+      "position": {
+        "x": -3.3,
+        "y": -1.24,
+        "z": 0
+      },
+      "orientation": {
+        "x": 0,
+        "y": 0,
+        "z": -0.06,
+        "w": 1
+      },
+      "theta_rad": -0.12,
+      "_pixel": {
+        "x": 30,
+        "y": 217
+      }
+    },
+    {
+      "id": "g3",
+      "label": "livingroom_pose",
+      "room_id": null,
+      "target_id": null,
+      "position": {
+        "x": 4.6,
+        "y": -0.5,
+        "z": 0
+      },
+      "orientation": {
+        "x": 0,
+        "y": 0,
+        "z": 0.78,
+        "w": 0.62
+      },
+      "theta_rad": 1.8,
+      "_pixel": {
+        "x": 188,
+        "y": 202
+      }
+    }
+  ]
+}
