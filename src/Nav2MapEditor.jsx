@@ -1207,6 +1207,80 @@ function RobotFileBrowser({api,request,onClose}){
   );
 }
 
+function ThorMdPicker({request,onCancel,onConfirm}){
+  const files=request?.files||[];
+  const [selected,setSelected]=useState(()=>new Set());
+  const [query,setQuery]=useState("");
+  const [busy,setBusy]=useState(false);
+  const keyFor=file=>file.relativePath||file.path||file.name;
+  const visible=useMemo(()=>{
+    const q=query.trim().toLowerCase();
+    if(!q)return files;
+    return files.filter(file=>String(file.relativePath||file.name||"").toLowerCase().includes(q));
+  },[files,query]);
+  const selectedFiles=files.filter(file=>selected.has(keyFor(file)));
+  const toggle=file=>{
+    const key=keyFor(file);
+    setSelected(prev=>{
+      const next=new Set(prev);
+      if(next.has(key))next.delete(key);else next.add(key);
+      return next;
+    });
+  };
+  const confirm=async()=>{
+    if(!selectedFiles.length||busy)return;
+    setBusy(true);
+    try{await onConfirm(selectedFiles,request?.dir);}
+    finally{setBusy(false);}
+  };
+
+  return(
+    <div style={MODAL}>
+      <div style={{...MBOX,width:"min(720px,92vw)",height:"min(560px,84vh)",padding:0,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+        <div style={{padding:"12px 14px",borderBottom:"1px solid rgba(0,212,255,0.12)",display:"flex",alignItems:"center",gap:8}}>
+          <div style={{color:"#00d4ff",fontWeight:"bold",letterSpacing:1,fontSize:13}}>📋 Thor MD 선택</div>
+          <div title={request?.dir} style={{flex:1,minWidth:0,color:"rgba(0,212,255,0.34)",fontSize:10,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+            {request?.dir}
+          </div>
+        </div>
+        <div style={{padding:"10px 12px",borderBottom:"1px solid rgba(0,212,255,0.08)",display:"flex",gap:6,alignItems:"center"}}>
+          <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="검색"
+            style={{...INPUT,flex:1,minWidth:0}}/>
+          <button style={{...btn(),fontSize:10,padding:"5px 8px"}} onClick={()=>setSelected(new Set(files.map(keyFor).filter(Boolean)))}>전체</button>
+          <button style={{...btn(),fontSize:10,padding:"5px 8px"}} onClick={()=>setSelected(new Set())}>해제</button>
+        </div>
+        <div style={{flex:1,overflow:"auto",padding:8}}>
+          {visible.length===0&&(
+            <div style={{color:"rgba(0,212,255,0.25)",fontSize:11,padding:20,textAlign:"center"}}>표시할 MD 파일이 없습니다</div>
+          )}
+          {visible.map(file=>{
+            const key=keyFor(file);
+            const checked=selected.has(key);
+            return(
+              <label key={key} style={{display:"grid",gridTemplateColumns:"24px minmax(0,1fr) 90px 120px",gap:8,alignItems:"center",padding:"6px 8px",borderRadius:5,cursor:"pointer",
+                background:checked?"rgba(0,212,255,0.16)":"transparent",border:`1px solid ${checked?"rgba(0,212,255,0.38)":"transparent"}`}}>
+                <input type="checkbox" checked={checked} onChange={()=>toggle(file)} style={{margin:0}}/>
+                <span title={file.path||file.relativePath} style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"#c9fffe"}}>{file.relativePath||file.name}</span>
+                <span style={{fontSize:10,color:"rgba(0,212,255,0.32)",textAlign:"right"}}>{formatFileSize(file.size)}</span>
+                <span style={{fontSize:10,color:"rgba(0,212,255,0.22)",textAlign:"right"}}>{file.mtimeMs?new Date(file.mtimeMs).toLocaleDateString():""}</span>
+              </label>
+            );
+          })}
+        </div>
+        <div style={{padding:"10px 12px",borderTop:"1px solid rgba(0,212,255,0.1)",display:"flex",gap:8,alignItems:"center"}}>
+          <div style={{fontSize:10,color:"rgba(0,212,255,0.35)"}}>{selectedFiles.length}개 선택</div>
+          <div style={{marginLeft:"auto",display:"flex",gap:8}}>
+            <button style={btn()} onClick={onCancel} disabled={busy}>취소</button>
+            <button style={{...btn(true),opacity:selectedFiles.length&&!busy?1:.45}} disabled={!selectedFiles.length||busy} onClick={confirm}>
+              {busy?"읽는 중...":"불러오기"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Markdown catalog management panel ───────────────────────────────────────
 function CatalogPanel({catalog,sources,placedRooms,placedCarriers,placedObjects,hasHostAPI,onImport,onFileImport,onRemoveSource,onReset,onAddRoom,onUpdateRoom,onDeleteRoom,onResetRooms,onSelectPlaced}) {
   const [view,setView]=useState("sources");
@@ -2332,6 +2406,7 @@ export default function Nav2MapEditor() {
   const [bagRecordPath, setBagRecordPath] = useState("");
   const [fileDialog, setFileDialog] = useState(null);
   const fileDialogResolveRef = useRef(null);
+  const [thorMdPicker, setThorMdPicker] = useState(null);
   const [showWorkspaceDlg, setShowWorkspaceDlg] = useState(false);
   const [workspaceSync, setWorkspaceSync] = useState({
     launchPath: "",
@@ -4014,6 +4089,29 @@ export default function Nav2MapEditor() {
     setStatus(`📋 Room 기본값 복구: 방 ${next.length}`);
   },[]);
 
+  const importThorMdSelection=useCallback(async(files,dir)=>{
+    const selectedFiles=Array.isArray(files)?files:[];
+    if(!selectedFiles.length)return;
+    const mdDir=dir||DEFAULT_THOR_MD_DIR;
+    setThorMdPicker(null);
+    try{
+      setStatus(`📋 Thor MD 읽는 중: ${selectedFiles.length}개`);
+      const items=[];
+      for(const file of selectedFiles){
+        const rel=file.relativePath||file.name;
+        const read=await hostAPI.readThorMdFile({dir:mdDir,path:rel});
+        items.push({
+          name:read.name||file.name||String(rel).split("/").pop(),
+          path:`thor:${read.path||`${mdDir}/${rel}`}`,
+          text:read.text||"",
+        });
+      }
+      importCatalogTexts(items);
+    }catch(err){
+      setStatus(`⚠ Thor MD 불러오기 실패: ${err.message||String(err)}`);
+    }
+  },[importCatalogTexts]);
+
   const handleCatalogOpen=useCallback(async()=>{
     if(!hostAPI?.openFileDialog){setStatus("⚠ MD 카탈로그 열기는 Electron 또는 robot backend에서만 가능합니다");return;}
     if(hostAPI?.listThorMdFiles&&hostAPI?.readThorMdFile){
@@ -4025,17 +4123,8 @@ export default function Nav2MapEditor() {
           setStatus(`⚠ Thor MD 파일 없음: ${listed?.dir||DEFAULT_THOR_MD_DIR}`);
           return;
         }
-        const items=[];
-        for(const file of files){
-          const rel=file.relativePath||file.path||file.name;
-          const read=await hostAPI.readThorMdFile({dir:listed?.dir||DEFAULT_THOR_MD_DIR,path:rel});
-          items.push({
-            name:read.name||file.name||String(rel).split("/").pop(),
-            path:`thor:${read.path||`${listed?.dir||DEFAULT_THOR_MD_DIR}/${rel}`}`,
-            text:read.text||"",
-          });
-        }
-        importCatalogTexts(items);
+        setThorMdPicker({key:Date.now(),dir:listed?.dir||DEFAULT_THOR_MD_DIR,files});
+        setStatus(`📋 Thor MD 선택 가능: ${files.length}개`);
         return;
       }catch(err){
         setStatus(`⚠ Thor MD 불러오기 실패: ${err.message||String(err)}`);
@@ -5400,6 +5489,11 @@ export default function Nav2MapEditor() {
       {/* ── ROBOT PC FILE BROWSER ── */}
       {fileDialog&&hostAPI?.isRobotBackend&&(
         <RobotFileBrowser key={fileDialog.key} api={hostAPI} request={fileDialog} onClose={closeFileDialog}/>
+      )}
+
+      {/* ── THOR MD PICKER ── */}
+      {thorMdPicker&&(
+        <ThorMdPicker key={thorMdPicker.key} request={thorMdPicker} onCancel={()=>setThorMdPicker(null)} onConfirm={importThorMdSelection}/>
       )}
     </div>
   );
