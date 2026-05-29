@@ -77,6 +77,7 @@ const THOR_DEFAULTS = {
   user: process.env.THOR_USER || "thor",
   password: process.env.THOR_PASSWORD || "thor",
   destDir: process.env.THOR_SEMANTIC_DIR || "/home/thor/bt_ws/map_json",
+  mdDir: process.env.THOR_MD_DIR || "/home/thor/inha_ws/arena_info/InhaDreamOpen2026",
 };
 
 function runShellCommand(command, options = {}) {
@@ -129,6 +130,75 @@ async function copySemanticToThor(options = {}) {
   ].join("; ");
   const result = await runShellCommand(command, { env: { THOR_PASSWORD: password } });
   return { sourcePath, destPath, host, user, ...result };
+}
+
+function thorSshTarget(options = {}) {
+  const host = String(options.host || THOR_DEFAULTS.host).trim();
+  const user = String(options.user || THOR_DEFAULTS.user).trim();
+  const password = String(options.password || THOR_DEFAULTS.password);
+  if (!host || !user) throw new Error("Thor SSH target is incomplete");
+  return { host, user, password, remote: `${user}@${host}` };
+}
+
+async function runThorCommand(remoteCommand, options = {}) {
+  const target = thorSshTarget(options);
+  const sshOptions = "-o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null";
+  const plainSsh = `ssh ${target.password ? "-o BatchMode=yes " : ""}${sshOptions} ${shellQuote(target.remote)} ${shellQuote(remoteCommand)}`;
+  const command = target.password
+    ? `if command -v sshpass >/dev/null 2>&1; then sshpass -p "$THOR_PASSWORD" ssh ${sshOptions} ${shellQuote(target.remote)} ${shellQuote(remoteCommand)}; else ${plainSsh}; fi`
+    : plainSsh;
+  const result = await runShellCommand(command, { env: { THOR_PASSWORD: target.password } });
+  return { ...target, ...result };
+}
+
+function thorMdDir(options = {}) {
+  return String(options.dir || THOR_DEFAULTS.mdDir).replace(/\/+$/, "");
+}
+
+function safeThorRelativePath(value) {
+  const rel = String(value || "").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!rel || rel.includes("\0") || rel.split("/").some(part => part === "..")) {
+    throw new Error("invalid Thor markdown path");
+  }
+  return rel;
+}
+
+async function listThorMarkdownFiles(options = {}) {
+  const dir = thorMdDir(options);
+  const maxDepth = Math.max(1, Math.min(5, Number(options.maxDepth || 2) || 2));
+  const remoteCommand = `cd ${shellQuote(dir)} && find . -maxdepth ${maxDepth} -type f -iname '*.md' -printf '%P\t%s\t%T@\\n'`;
+  const result = await runThorCommand(remoteCommand, options);
+  const files = result.stdout.split(/\r?\n/)
+    .filter(Boolean)
+    .map(line => {
+      const [relativePath, size, mtime] = line.split("\t");
+      return {
+        name: path.posix.basename(relativePath || ""),
+        relativePath,
+        path: `${dir}/${relativePath}`,
+        size: Number(size) || 0,
+        mtimeMs: (Number(mtime) || 0) * 1000,
+      };
+    })
+    .filter(file => file.relativePath)
+    .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  return { dir, host: result.host, user: result.user, files };
+}
+
+async function readThorMarkdownFile(options = {}) {
+  const dir = thorMdDir(options);
+  const rel = safeThorRelativePath(options.path || options.relativePath);
+  const remoteCommand = `cd ${shellQuote(dir)} && cat -- ${shellQuote(rel)}`;
+  const result = await runThorCommand(remoteCommand, options);
+  return {
+    dir,
+    host: result.host,
+    user: result.user,
+    name: path.posix.basename(rel),
+    relativePath: rel,
+    path: `${dir}/${rel}`,
+    text: result.stdout,
+  };
 }
 
 function escapeRegExp(value) {
@@ -630,6 +700,8 @@ const apiRoutes = {
     return true;
   },
   "POST /api/thor/copy-semantic": async body => copySemanticToThor(body || {}),
+  "POST /api/thor/list-md": async body => listThorMarkdownFiles(body || {}),
+  "POST /api/thor/read-md": async body => readThorMarkdownFile(body || {}),
   "POST /api/workspace/update-launch-map": async body => {
     if (!body.launchPath) throw new Error("launchPath is required");
     if (!body.mapPath) throw new Error("mapPath is required");

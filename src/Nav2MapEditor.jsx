@@ -77,6 +77,8 @@ function createRobotBackendAPI(baseUrl) {
       });
     },
     copySemanticToThor: (options) => post("/api/thor/copy-semantic", options),
+    listThorMdFiles: (options) => post("/api/thor/list-md", options),
+    readThorMdFile: (options) => post("/api/thor/read-md", options),
     readDir: (dirPath) => post("/api/fs/readdir", { path: dirPath }),
     browseDir: (dirPath) => post("/api/fs/readdir", { path: dirPath, withFileTypes: true }),
     fsRoots: () => get("/api/fs/roots"),
@@ -172,6 +174,7 @@ const QUICK_MAP_NAMES = {1:"map_first",2:"map_second"};
 const DEFAULT_WORKSPACE_ROOT = "/home/nvidia/rby1_nav2";
 const DEFAULT_MAP_SEARCH_DIR = "/home/nvidia/rby1_nav2/src/rby1_nav2/maps";
 const DEFAULT_BAG_RECORD_DIR = "/home/nvidia/rby1_nav2/src/rby1_nav2/bag";
+const DEFAULT_THOR_MD_DIR = import.meta.env.VITE_THOR_MD_DIR || "/home/thor/inha_ws/arena_info/InhaDreamOpen2026";
 const DEFAULT_BAG_RECORD_TOPICS = [
   "/tf",
   "/odom",
@@ -4013,7 +4016,34 @@ export default function Nav2MapEditor() {
 
   const handleCatalogOpen=useCallback(async()=>{
     if(!hostAPI?.openFileDialog){setStatus("⚠ MD 카탈로그 열기는 Electron 또는 robot backend에서만 가능합니다");return;}
+    if(hostAPI?.listThorMdFiles&&hostAPI?.readThorMdFile){
+      try{
+        setStatus(`📋 Thor MD 목록 읽는 중: ${DEFAULT_THOR_MD_DIR}`);
+        const listed=await hostAPI.listThorMdFiles({dir:DEFAULT_THOR_MD_DIR,maxDepth:2});
+        const files=Array.isArray(listed)?listed:(listed?.files||[]);
+        if(files.length===0){
+          setStatus(`⚠ Thor MD 파일 없음: ${listed?.dir||DEFAULT_THOR_MD_DIR}`);
+          return;
+        }
+        const items=[];
+        for(const file of files){
+          const rel=file.relativePath||file.path||file.name;
+          const read=await hostAPI.readThorMdFile({dir:listed?.dir||DEFAULT_THOR_MD_DIR,path:rel});
+          items.push({
+            name:read.name||file.name||String(rel).split("/").pop(),
+            path:`thor:${read.path||`${listed?.dir||DEFAULT_THOR_MD_DIR}/${rel}`}`,
+            text:read.text||"",
+          });
+        }
+        importCatalogTexts(items);
+        return;
+      }catch(err){
+        setStatus(`⚠ Thor MD 불러오기 실패: ${err.message||String(err)}`);
+        return;
+      }
+    }
     const selected=await pickHostPath({
+      defaultPath:DEFAULT_THOR_MD_DIR,
       filters:[{name:"Markdown catalog",extensions:["md"]},{name:"All files",extensions:["*"]}],
       properties:["openFile","multiSelections"],
     });
