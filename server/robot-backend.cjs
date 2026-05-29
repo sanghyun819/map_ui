@@ -163,6 +163,55 @@ function safeThorRelativePath(value) {
   return rel;
 }
 
+function safeThorRelativeDir(value) {
+  const rel = String(value || "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+/g, "/")
+    .replace(/\/+$/, "");
+  if (rel.includes("\0") || rel.split("/").some(part => part === "..")) {
+    throw new Error("invalid Thor markdown directory");
+  }
+  return rel === "." ? "" : rel;
+}
+
+async function listThorMarkdownDir(options = {}) {
+  const dir = thorMdDir(options);
+  const rel = safeThorRelativeDir(options.path || options.relativePath || "");
+  const searchPath = rel ? `./${rel}` : ".";
+  const remoteCommand = `cd ${shellQuote(dir)} && find ${shellQuote(searchPath)} -maxdepth 1 -mindepth 1 \\( -type d -o -iname '*.md' \\) -printf '%p\t%f\t%y\t%s\t%T@\\n'`;
+  const result = await runThorCommand(remoteCommand, options);
+  const entries = result.stdout.split(/\r?\n/)
+    .filter(Boolean)
+    .map(line => {
+      const [rawPath, name, type, size, mtime] = line.split("\t");
+      const relativePath = String(rawPath || "").replace(/^\.\//, "");
+      const isDirectory = type === "d";
+      return {
+        name: name || path.posix.basename(relativePath),
+        relativePath,
+        path: `${dir}/${relativePath}`,
+        isDirectory,
+        isFile: !isDirectory,
+        size: Number(size) || 0,
+        mtimeMs: (Number(mtime) || 0) * 1000,
+      };
+    })
+    .filter(entry => entry.relativePath)
+    .sort((a, b) => {
+      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  return {
+    dir,
+    path: rel,
+    absolutePath: rel ? `${dir}/${rel}` : dir,
+    host: result.host,
+    user: result.user,
+    entries,
+  };
+}
+
 async function listThorMarkdownFiles(options = {}) {
   const dir = thorMdDir(options);
   const maxDepth = Math.max(1, Math.min(5, Number(options.maxDepth || 2) || 2));
@@ -701,6 +750,7 @@ const apiRoutes = {
   },
   "POST /api/thor/copy-semantic": async body => copySemanticToThor(body || {}),
   "POST /api/thor/list-md": async body => listThorMarkdownFiles(body || {}),
+  "POST /api/thor/list-md-dir": async body => listThorMarkdownDir(body || {}),
   "POST /api/thor/read-md": async body => readThorMarkdownFile(body || {}),
   "POST /api/workspace/update-launch-map": async body => {
     if (!body.launchPath) throw new Error("launchPath is required");

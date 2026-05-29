@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("thor:copySemantic", options),
   listThorMdFiles: (options) =>
     ipcRenderer.invoke("thor:listMdFiles", options),
+  listThorMdDir: (options) =>
+    ipcRenderer.invoke("thor:listMdDir", options),
   readThorMdFile: (options) =>
     ipcRenderer.invoke("thor:readMdFile", options),
   readDir: (dirPath) => ipcRenderer.invoke("fs:readDir", dirPath),

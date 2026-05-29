@@ -78,6 +78,7 @@ function createRobotBackendAPI(baseUrl) {
     },
     copySemanticToThor: (options) => post("/api/thor/copy-semantic", options),
     listThorMdFiles: (options) => post("/api/thor/list-md", options),
+    listThorMdDir: (options) => post("/api/thor/list-md-dir", options),
     readThorMdFile: (options) => post("/api/thor/read-md", options),
     readDir: (dirPath) => post("/api/fs/readdir", { path: dirPath }),
     browseDir: (dirPath) => post("/api/fs/readdir", { path: dirPath, withFileTypes: true }),
@@ -505,6 +506,11 @@ function parentRobotPath(dir){
   const clean=(dir||"/").replace(/\\/g,"/").replace(/\/+$/,"")||"/";
   if(clean==="/")return "/";
   return dirnameFromPath(clean)||"/";
+}
+function parentRelativePath(path){
+  const parts=String(path||"").replace(/\\/g,"/").split("/").filter(Boolean);
+  parts.pop();
+  return parts.join("/");
 }
 function pathLooksAbsolute(path){
   return /^\//.test(path||"")||/^[A-Za-z]:[\\/]/.test(path||"");
@@ -1207,23 +1213,53 @@ function RobotFileBrowser({api,request,onClose}){
   );
 }
 
-function ThorMdPicker({request,onCancel,onConfirm}){
-  const files=request?.files||[];
-  const [selected,setSelected]=useState(()=>new Set());
+function ThorMdPicker({request,onCancel,onConfirm,onBrowse}){
+  const [entries,setEntries]=useState(request?.entries||[]);
+  const [currentPath,setCurrentPath]=useState(request?.path||"");
+  const [pathDraft,setPathDraft]=useState(request?.path||"");
+  const [selected,setSelected]=useState(()=>({}));
   const [query,setQuery]=useState("");
   const [busy,setBusy]=useState(false);
-  const keyFor=file=>file.relativePath||file.path||file.name;
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState("");
+  const keyFor=entry=>entry.relativePath||entry.path||entry.name;
   const visible=useMemo(()=>{
     const q=query.trim().toLowerCase();
-    if(!q)return files;
-    return files.filter(file=>String(file.relativePath||file.name||"").toLowerCase().includes(q));
-  },[files,query]);
-  const selectedFiles=files.filter(file=>selected.has(keyFor(file)));
-  const toggle=file=>{
-    const key=keyFor(file);
+    if(!q)return entries;
+    return entries.filter(entry=>String(entry.relativePath||entry.name||"").toLowerCase().includes(q));
+  },[entries,query]);
+  const selectedFiles=Object.values(selected);
+  const loadDir=async(path="")=>{
+    setLoading(true);setError("");
+    try{
+      const res=await onBrowse(path);
+      const nextPath=res?.path||"";
+      setCurrentPath(nextPath);
+      setPathDraft(nextPath);
+      setEntries(res?.entries||[]);
+      setQuery("");
+    }catch(err){
+      setError(err.message||String(err));
+    }finally{
+      setLoading(false);
+    }
+  };
+  const toggle=entry=>{
+    if(entry.isDirectory){
+      loadDir(entry.relativePath);
+      return;
+    }
+    const key=keyFor(entry);
     setSelected(prev=>{
-      const next=new Set(prev);
-      if(next.has(key))next.delete(key);else next.add(key);
+      const next={...prev};
+      if(next[key])delete next[key];else next[key]=entry;
+      return next;
+    });
+  };
+  const selectVisibleFiles=()=>{
+    setSelected(prev=>{
+      const next={...prev};
+      visible.filter(entry=>!entry.isDirectory).forEach(entry=>{next[keyFor(entry)]=entry;});
       return next;
     });
   };
@@ -1240,30 +1276,42 @@ function ThorMdPicker({request,onCancel,onConfirm}){
         <div style={{padding:"12px 14px",borderBottom:"1px solid rgba(0,212,255,0.12)",display:"flex",alignItems:"center",gap:8}}>
           <div style={{color:"#00d4ff",fontWeight:"bold",letterSpacing:1,fontSize:13}}>📋 Thor MD 선택</div>
           <div title={request?.dir} style={{flex:1,minWidth:0,color:"rgba(0,212,255,0.34)",fontSize:10,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-            {request?.dir}
+            {request?.dir}{currentPath?`/${currentPath}`:""}
           </div>
+        </div>
+        <div style={{padding:"10px 12px",borderBottom:"1px solid rgba(0,212,255,0.08)",display:"flex",gap:6}}>
+          <button style={{...btn(),padding:"5px 8px"}} onClick={()=>loadDir(parentRelativePath(currentPath))} disabled={loading||busy}>↑</button>
+          <input value={pathDraft} onChange={e=>setPathDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&loadDir(pathDraft)}
+            placeholder="상대 경로"
+            style={{...INPUT,flex:1,minWidth:0}}/>
+          <button style={btn(true)} onClick={()=>loadDir(pathDraft)} disabled={loading||busy}>이동</button>
         </div>
         <div style={{padding:"10px 12px",borderBottom:"1px solid rgba(0,212,255,0.08)",display:"flex",gap:6,alignItems:"center"}}>
           <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="검색"
             style={{...INPUT,flex:1,minWidth:0}}/>
-          <button style={{...btn(),fontSize:10,padding:"5px 8px"}} onClick={()=>setSelected(new Set(files.map(keyFor).filter(Boolean)))}>전체</button>
-          <button style={{...btn(),fontSize:10,padding:"5px 8px"}} onClick={()=>setSelected(new Set())}>해제</button>
+          <button style={{...btn(),fontSize:10,padding:"5px 8px"}} onClick={selectVisibleFiles}>현재 MD 전체</button>
+          <button style={{...btn(),fontSize:10,padding:"5px 8px"}} onClick={()=>setSelected({})}>해제</button>
         </div>
         <div style={{flex:1,overflow:"auto",padding:8}}>
+          {error&&<div style={{color:"#ff6680",fontSize:11,padding:10}}>⚠ {error}</div>}
+          {loading&&<div style={{color:"rgba(0,212,255,0.45)",fontSize:11,padding:10}}>읽는 중...</div>}
           {visible.length===0&&(
-            <div style={{color:"rgba(0,212,255,0.25)",fontSize:11,padding:20,textAlign:"center"}}>표시할 MD 파일이 없습니다</div>
+            <div style={{color:"rgba(0,212,255,0.25)",fontSize:11,padding:20,textAlign:"center"}}>표시할 폴더 또는 MD 파일이 없습니다</div>
           )}
-          {visible.map(file=>{
-            const key=keyFor(file);
-            const checked=selected.has(key);
+          {visible.map(entry=>{
+            const key=keyFor(entry);
+            const checked=!!selected[key];
             return(
-              <label key={key} style={{display:"grid",gridTemplateColumns:"24px minmax(0,1fr) 90px 120px",gap:8,alignItems:"center",padding:"6px 8px",borderRadius:5,cursor:"pointer",
+              <div key={key}
+                onClick={()=>toggle(entry)}
+                onDoubleClick={()=>entry.isDirectory&&loadDir(entry.relativePath)}
+                style={{display:"grid",gridTemplateColumns:"24px minmax(0,1fr) 90px 120px",gap:8,alignItems:"center",padding:"6px 8px",borderRadius:5,cursor:"pointer",
                 background:checked?"rgba(0,212,255,0.16)":"transparent",border:`1px solid ${checked?"rgba(0,212,255,0.38)":"transparent"}`}}>
-                <input type="checkbox" checked={checked} onChange={()=>toggle(file)} style={{margin:0}}/>
-                <span title={file.path||file.relativePath} style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"#c9fffe"}}>{file.relativePath||file.name}</span>
-                <span style={{fontSize:10,color:"rgba(0,212,255,0.32)",textAlign:"right"}}>{formatFileSize(file.size)}</span>
-                <span style={{fontSize:10,color:"rgba(0,212,255,0.22)",textAlign:"right"}}>{file.mtimeMs?new Date(file.mtimeMs).toLocaleDateString():""}</span>
-              </label>
+                <span>{entry.isDirectory?"📁":<input type="checkbox" checked={checked} onChange={()=>toggle(entry)} onClick={e=>e.stopPropagation()} style={{margin:0}}/>}</span>
+                <span title={entry.path||entry.relativePath} style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:entry.isDirectory?"#c9fffe":"#8eb8c8"}}>{entry.name}</span>
+                <span style={{fontSize:10,color:"rgba(0,212,255,0.32)",textAlign:"right"}}>{entry.isDirectory?"dir":formatFileSize(entry.size)}</span>
+                <span style={{fontSize:10,color:"rgba(0,212,255,0.22)",textAlign:"right"}}>{entry.mtimeMs?new Date(entry.mtimeMs).toLocaleDateString():""}</span>
+              </div>
             );
           })}
         </div>
@@ -4112,19 +4160,23 @@ export default function Nav2MapEditor() {
     }
   },[importCatalogTexts]);
 
+  const browseThorMdDir=useCallback(async(path="")=>{
+    return hostAPI.listThorMdDir({dir:DEFAULT_THOR_MD_DIR,path});
+  },[]);
+
   const handleCatalogOpen=useCallback(async()=>{
     if(!hostAPI?.openFileDialog){setStatus("⚠ MD 카탈로그 열기는 Electron 또는 robot backend에서만 가능합니다");return;}
-    if(hostAPI?.listThorMdFiles&&hostAPI?.readThorMdFile){
+    if(hostAPI?.listThorMdDir&&hostAPI?.readThorMdFile){
       try{
-        setStatus(`📋 Thor MD 목록 읽는 중: ${DEFAULT_THOR_MD_DIR}`);
-        const listed=await hostAPI.listThorMdFiles({dir:DEFAULT_THOR_MD_DIR,maxDepth:2});
-        const files=Array.isArray(listed)?listed:(listed?.files||[]);
-        if(files.length===0){
-          setStatus(`⚠ Thor MD 파일 없음: ${listed?.dir||DEFAULT_THOR_MD_DIR}`);
-          return;
-        }
-        setThorMdPicker({key:Date.now(),dir:listed?.dir||DEFAULT_THOR_MD_DIR,files});
-        setStatus(`📋 Thor MD 선택 가능: ${files.length}개`);
+        setStatus(`📋 Thor MD 폴더 읽는 중: ${DEFAULT_THOR_MD_DIR}`);
+        const listed=await browseThorMdDir("");
+        setThorMdPicker({
+          key:Date.now(),
+          dir:listed?.dir||DEFAULT_THOR_MD_DIR,
+          path:listed?.path||"",
+          entries:listed?.entries||[],
+        });
+        setStatus(`📋 Thor MD 브라우저 열림: ${listed?.entries?.length||0}개 항목`);
         return;
       }catch(err){
         setStatus(`⚠ Thor MD 불러오기 실패: ${err.message||String(err)}`);
@@ -4144,7 +4196,7 @@ export default function Nav2MapEditor() {
       items.push({name:p.split("/").pop(),path:p,text});
     }
     importCatalogTexts(items);
-  },[importCatalogTexts,pickHostPath]);
+  },[browseThorMdDir,importCatalogTexts,pickHostPath]);
 
   const handleCatalogFiles=async(e)=>{
     const files=Array.from(e.target.files||[]);
@@ -5493,7 +5545,7 @@ export default function Nav2MapEditor() {
 
       {/* ── THOR MD PICKER ── */}
       {thorMdPicker&&(
-        <ThorMdPicker key={thorMdPicker.key} request={thorMdPicker} onCancel={()=>setThorMdPicker(null)} onConfirm={importThorMdSelection}/>
+        <ThorMdPicker key={thorMdPicker.key} request={thorMdPicker} onCancel={()=>setThorMdPicker(null)} onConfirm={importThorMdSelection} onBrowse={browseThorMdDir}/>
       )}
     </div>
   );
