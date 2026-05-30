@@ -184,6 +184,8 @@ const DEFAULT_BAG_RECORD_TOPICS = [
   "/scan_merged",
   "/livox/lidar",
   "/camera/camera_head/color/image_raw/compressed",
+  "/camera/camera_head/color/camera_info",
+  "/camera/camera_head/depth/color/points",
   "/camera/camera_left/color/image_rect_raw/compressed",
   "/camera/camera_right/color/image_rect_raw/compressed",
 ];

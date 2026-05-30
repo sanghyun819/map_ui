@@ -1,0 +1,7 @@
+rosbags>=0.9.20
+numpy>=1.21
+Pillow>=9.0
+PyYAML>=5.4
+matplotlib>=3.5
+# optional, used only by visualize.py and for .pcd export
+open3d>=0.16

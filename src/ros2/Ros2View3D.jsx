@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { pixelToWorld } from "./Ros2Bridge.js";
 
 const S = {
@@ -89,6 +89,32 @@ void main() {
   vec2 d = gl_PointCoord - vec2(0.5);
   if (dot(d, d) > 0.25) discard;
   gl_FragColor = vec4(uColor, uAlpha);
+}
+`;
+
+const CPTS_VS = `
+attribute vec3 aPos;
+attribute vec3 aCol;
+uniform mat4 uMVP;
+uniform float uSize;
+uniform float uZScale;
+varying vec3 vCol;
+void main() {
+  vCol = aCol;
+  vec3 p = vec3(aPos.xy, aPos.z * uZScale);
+  gl_Position = uMVP * vec4(p, 1.0);
+  gl_PointSize = uSize;
+}
+`;
+
+const CPTS_FS = `
+precision mediump float;
+varying vec3 vCol;
+uniform float uAlpha;
+void main() {
+  vec2 d = gl_PointCoord - vec2(0.5);
+  if (dot(d, d) > 0.25) discard;
+  gl_FragColor = vec4(vCol, uAlpha);
 }
 `;
 
@@ -280,6 +306,21 @@ function flattenPoints(points, max = 200000) {
   return out;
 }
 
+function parseHeightMap(json) {
+  // Accepts the height_view3d.json produced by 3d_map/build_height_map.py:
+  // { count, xyz:[x,y,z,...], rgb:[r,g,b,...] } in map-frame world coords.
+  if (!json || !Array.isArray(json.xyz) || !json.xyz.length) return null;
+  const pos = Float32Array.from(json.xyz);
+  const count = Math.floor(pos.length / 3);
+  let col;
+  if (Array.isArray(json.rgb) && json.rgb.length >= count * 3) {
+    col = Float32Array.from(json.rgb.slice(0, count * 3));
+  } else {
+    col = new Float32Array(count * 3).fill(0.6); // grey fallback
+  }
+  return { pos, col, count, version: Date.now() };
+}
+
 export default function Ros2View3D({
   mapCanvasRef,
   meta,
@@ -301,6 +342,164 @@ export default function Ros2View3D({
     target: { x: 0, y: 0, z: 0 },
   });
 
+  const heightMapRef = useRef(null);
+  const heightMetaRef = useRef(null);     // origin/resolution/z range from loaded file
+  const showHeightRef = useRef(true);
+  const zScaleRef = useRef(1);
+  const fileInputRef = useRef(null);
+  const mvpRef = useRef(null);            // latest MVP, for screen-space point picking
+  const editModeRef = useRef(false);
+  const undoRef = useRef([]);             // stack of previous {pos,col,count}
+  const ptSizeRef = useRef(3.5);
+  const [heightInfo, setHeightInfo] = useState(null);
+  const [showHeight, setShowHeight] = useState(true);
+  const [zScale, setZScale] = useState(1);
+  const [ptSize, setPtSize] = useState(3.5);
+  const [zCut, setZCut] = useState(2);
+  const [editMode, setEditMode] = useState(false);
+  const [polygon, setPolygon] = useState([]);   // CSS-px vertices for the lasso
+  const [cursor, setCursor] = useState(null);    // live cursor for the rubber-band edge
+  const [editMsg, setEditMsg] = useState(null);  // transient "removed N" feedback
+
+  useEffect(() => { showHeightRef.current = showHeight; }, [showHeight]);
+  useEffect(() => { zScaleRef.current = zScale; }, [zScale]);
+  useEffect(() => { ptSizeRef.current = ptSize; }, [ptSize]);
+  useEffect(() => { editModeRef.current = editMode; }, [editMode]);
+
+  const loadHeightFile = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const json = JSON.parse(reader.result);
+        const data = parseHeightMap(json);
+        if (!data) { setHeightInfo("로드 실패: 빈 데이터"); return; }
+        heightMapRef.current = data;
+        heightMetaRef.current = {
+          type: json.type || "height_map_view3d",
+          frame: json.frame || "map",
+          resolution: json.resolution,
+          origin: json.origin,
+          z_min: json.z_min,
+          z_max: json.z_max,
+        };
+        undoRef.current = [];
+        setHeightInfo(`${data.count.toLocaleString()} pts`);
+      } catch (err) {
+        console.error("[3D] height map parse error:", err);
+        setHeightInfo("로드 실패: JSON 오류");
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  // ---- CloudCompare-style polygon segmentation -------------------------------
+  const pointInPoly = (px, py, poly) => {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+      if (((yi > py) !== (yj > py)) && (px < ((xj - xi) * (py - yi)) / (yj - yi) + xi)) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  };
+
+  const applyDelete = (deleteInside) => {
+    const hm = heightMapRef.current;
+    const mvp = mvpRef.current;
+    const canvas = glCanvasRef.current;
+    if (!hm || !mvp || !canvas || polygon.length < 3) return;
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+    const zs = zScaleRef.current;
+
+    const keep = [];
+    for (let i = 0; i < hm.count; i++) {
+      const x = hm.pos[i * 3], y = hm.pos[i * 3 + 1], z = hm.pos[i * 3 + 2] * zs;
+      const cw = mvp[3] * x + mvp[7] * y + mvp[11] * z + mvp[15];
+      let sel = false;
+      if (cw > 1e-6) {
+        const cx = mvp[0] * x + mvp[4] * y + mvp[8] * z + mvp[12];
+        const cy = mvp[1] * x + mvp[5] * y + mvp[9] * z + mvp[13];
+        const sx = (cx / cw * 0.5 + 0.5) * W;
+        const sy = (1 - (cy / cw * 0.5 + 0.5)) * H;
+        sel = pointInPoly(sx, sy, polygon);
+      }
+      if (deleteInside ? !sel : sel) keep.push(i);
+    }
+
+    const np = new Float32Array(keep.length * 3);
+    const nc = new Float32Array(keep.length * 3);
+    for (let k = 0; k < keep.length; k++) {
+      const i = keep[k];
+      np[k * 3] = hm.pos[i * 3]; np[k * 3 + 1] = hm.pos[i * 3 + 1]; np[k * 3 + 2] = hm.pos[i * 3 + 2];
+      nc[k * 3] = hm.col[i * 3]; nc[k * 3 + 1] = hm.col[i * 3 + 1]; nc[k * 3 + 2] = hm.col[i * 3 + 2];
+    }
+    undoRef.current.push({ pos: hm.pos, col: hm.col, count: hm.count });
+    if (undoRef.current.length > 30) undoRef.current.shift();
+    heightMapRef.current = { pos: np, col: nc, count: keep.length, version: Date.now() };
+    setHeightInfo(`${keep.length.toLocaleString()} pts`);
+    setEditMsg(`−${(hm.count - keep.length).toLocaleString()} (남음 ${keep.length.toLocaleString()})`);
+    setPolygon([]);
+    setCursor(null);
+  };
+
+  const deleteByZ = (above, zVal) => {
+    const hm = heightMapRef.current;
+    if (!hm || hm.count === 0 || !Number.isFinite(zVal)) return;
+    const keep = [];
+    for (let i = 0; i < hm.count; i++) {
+      const z = hm.pos[i * 3 + 2];           // raw world height (not z-scaled)
+      const cut = above ? z > zVal : z < zVal;
+      if (!cut) keep.push(i);
+    }
+    if (keep.length === hm.count) { setEditMsg("삭제할 점 없음"); return; }
+    const np = new Float32Array(keep.length * 3);
+    const nc = new Float32Array(keep.length * 3);
+    for (let k = 0; k < keep.length; k++) {
+      const i = keep[k];
+      np[k * 3] = hm.pos[i * 3]; np[k * 3 + 1] = hm.pos[i * 3 + 1]; np[k * 3 + 2] = hm.pos[i * 3 + 2];
+      nc[k * 3] = hm.col[i * 3]; nc[k * 3 + 1] = hm.col[i * 3 + 1]; nc[k * 3 + 2] = hm.col[i * 3 + 2];
+    }
+    undoRef.current.push({ pos: hm.pos, col: hm.col, count: hm.count });
+    if (undoRef.current.length > 30) undoRef.current.shift();
+    heightMapRef.current = { pos: np, col: nc, count: keep.length, version: Date.now() };
+    setHeightInfo(`${keep.length.toLocaleString()} pts`);
+    setEditMsg(`z${above ? ">" : "<"}${zVal} −${(hm.count - keep.length).toLocaleString()} (남음 ${keep.length.toLocaleString()})`);
+  };
+
+  const undoEdit = () => {
+    const prev = undoRef.current.pop();
+    if (!prev) return;
+    heightMapRef.current = { ...prev, version: Date.now() };
+    setHeightInfo(`${prev.count.toLocaleString()} pts`);
+    setEditMsg(`되돌림 (${prev.count.toLocaleString()})`);
+  };
+
+  const saveHeightJson = () => {
+    const hm = heightMapRef.current;
+    if (!hm) return;
+    const m = heightMetaRef.current || {};
+    const zs = hm.pos.length ? hm.pos.filter((_, i) => i % 3 === 2) : [];
+    const out = {
+      type: "height_map_view3d",
+      frame: m.frame || "map",
+      resolution: m.resolution,
+      origin: m.origin,
+      z_min: m.z_min ?? (zs.length ? Math.min(...zs) : 0),
+      z_max: m.z_max ?? (zs.length ? Math.max(...zs) : 0),
+      count: hm.count,
+      xyz: Array.from(hm.pos, (v) => Math.round(v * 1e4) / 1e4),
+      rgb: Array.from(hm.col, (v) => Math.round(v * 1e3) / 1e3),
+    };
+    const blob = new Blob([JSON.stringify(out)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "height_view3d_edited.json";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
   const mapGeom = useMemo(() => mapQuad(meta, canvasSize), [meta, canvasSize]);
 
   useEffect(() => {
@@ -317,18 +516,23 @@ export default function Ros2View3D({
 
     let mapProgram;
     let ptsProgram;
+    let cptsProgram;
     let lineProgram;
     let mapPosBuf;
     let mapUvBuf;
     let mapIdxBuf;
     let mapTex;
     let ptsBuf;
+    let cptsPosBuf;
+    let cptsColBuf;
     let lineBuf;
     let anim = 0;
+    let hmUploadedVersion = -1;
 
     try {
       mapProgram = createProgram(gl, MAP_VS, MAP_FS);
       ptsProgram = createProgram(gl, PTS_VS, PTS_FS);
+      cptsProgram = createProgram(gl, CPTS_VS, CPTS_FS);
       lineProgram = createProgram(gl, LINE_VS, LINE_FS);
     } catch (e) {
       console.error("[3D] shader/program error:", e);
@@ -339,6 +543,8 @@ export default function Ros2View3D({
     mapUvBuf = gl.createBuffer();
     mapIdxBuf = gl.createBuffer();
     ptsBuf = gl.createBuffer();
+    cptsPosBuf = gl.createBuffer();
+    cptsColBuf = gl.createBuffer();
     lineBuf = gl.createBuffer();
 
     mapTex = gl.createTexture();
@@ -390,6 +596,7 @@ export default function Ros2View3D({
       const proj = perspective((viewMode === "top" ? 42 : 60) * Math.PI / 180, cw / ch, 0.05, 1000);
       const view = lookAt(eye, center, up);
       const mvp = multiply4(proj, view);
+      mvpRef.current = mvp;
 
       if (mapGeom && mapCanvasRef?.current) {
         const mapCanvas = mapCanvasRef.current;
@@ -427,6 +634,38 @@ export default function Ros2View3D({
         gl.bindTexture(gl.TEXTURE_2D, mapTex);
         gl.uniform1i(uTex, 0);
         gl.drawElements(gl.TRIANGLES, mapGeom.idx.length, gl.UNSIGNED_SHORT, 0);
+      }
+
+      const hm = heightMapRef.current;
+      if (showHeightRef.current && hm && hm.count > 0) {
+        gl.useProgram(cptsProgram);
+        const aPos = gl.getAttribLocation(cptsProgram, "aPos");
+        const aCol = gl.getAttribLocation(cptsProgram, "aCol");
+        const uMVP = gl.getUniformLocation(cptsProgram, "uMVP");
+        const uSize = gl.getUniformLocation(cptsProgram, "uSize");
+        const uAlpha = gl.getUniformLocation(cptsProgram, "uAlpha");
+        const uZScale = gl.getUniformLocation(cptsProgram, "uZScale");
+
+        if (hm.version !== hmUploadedVersion) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, cptsPosBuf);
+          gl.bufferData(gl.ARRAY_BUFFER, hm.pos, gl.STATIC_DRAW);
+          gl.bindBuffer(gl.ARRAY_BUFFER, cptsColBuf);
+          gl.bufferData(gl.ARRAY_BUFFER, hm.col, gl.STATIC_DRAW);
+          hmUploadedVersion = hm.version;
+        }
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, cptsPosBuf);
+        gl.enableVertexAttribArray(aPos);
+        gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, cptsColBuf);
+        gl.enableVertexAttribArray(aCol);
+        gl.vertexAttribPointer(aCol, 3, gl.FLOAT, false, 0, 0);
+
+        gl.uniformMatrix4fv(uMVP, false, mvp);
+        gl.uniform1f(uSize, ptSizeRef.current * (viewMode === "top" ? 0.8 : 1));
+        gl.uniform1f(uAlpha, 0.95);
+        gl.uniform1f(uZScale, zScaleRef.current);
+        gl.drawArrays(gl.POINTS, 0, hm.count);
       }
 
       const pts = flattenPoints(lidarWorldPoints?.current, 200000);
@@ -500,16 +739,29 @@ export default function Ros2View3D({
       gl.deleteBuffer(mapUvBuf);
       gl.deleteBuffer(mapIdxBuf);
       gl.deleteBuffer(ptsBuf);
+      gl.deleteBuffer(cptsPosBuf);
+      gl.deleteBuffer(cptsColBuf);
       gl.deleteBuffer(lineBuf);
       gl.deleteTexture(mapTex);
       gl.deleteProgram(mapProgram);
       gl.deleteProgram(ptsProgram);
+      gl.deleteProgram(cptsProgram);
       gl.deleteProgram(lineProgram);
     };
   }, [mapCanvasRef, mapGeom, lidarWorldPoints, pathWorldPoints, stats, viewMode]);
 
+  const localXY = (e) => {
+    const r = glCanvasRef.current.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  };
+
   const onMouseDown = (e) => {
     e.preventDefault();
+    // Edit mode: left-click drops a lasso vertex; other buttons still drive the camera.
+    if (editModeRef.current && e.button === 0) {
+      setPolygon(p => [...p, localXY(e)]);
+      return;
+    }
     dragRef.current = {
       btn: e.button,
       x: e.clientX,
@@ -522,6 +774,7 @@ export default function Ros2View3D({
   };
 
   const onMouseMove = (e) => {
+    if (editModeRef.current) setCursor(localXY(e));
     const d = dragRef.current;
     if (!d) return;
     const dx = e.clientX - d.x;
@@ -551,7 +804,7 @@ export default function Ros2View3D({
     <div style={S.wrap}>
       <canvas
         ref={glCanvasRef}
-        style={S.canvas}
+        style={{ ...S.canvas, cursor: editMode ? "crosshair" : "default" }}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
@@ -559,14 +812,104 @@ export default function Ros2View3D({
         onWheel={onWheel}
         onContextMenu={e => e.preventDefault()}
       />
+      {editMode && polygon.length > 0 && (
+        <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
+          <polyline
+            points={[...polygon, ...(cursor ? [cursor] : []), polygon[0]]
+              .map(p => `${p.x},${p.y}`).join(" ")}
+            fill="rgba(0,212,255,0.12)" stroke="#00d4ff" strokeWidth="1.5" strokeDasharray="5 4"
+          />
+          {polygon.map((p, i) => (
+            <circle key={i} cx={p.x} cy={p.y} r="3" fill="#00d4ff" />
+          ))}
+        </svg>
+      )}
       <div style={S.hud}>
         <span style={{ color: "#00d4ff", fontWeight: "bold" }}>3D</span>
         <button style={S.btn(viewMode === "free")} onClick={() => onChangeViewMode?.("free")}>Free</button>
         <button style={S.btn(viewMode === "top")} onClick={() => onChangeViewMode?.("top")}>Top</button>
+        <span style={{ opacity: 0.4 }}>|</span>
+        <button style={S.btn(false)} onClick={() => fileInputRef.current?.click()} title="height_view3d.json 로드">Height ⬆</button>
+        {heightInfo && (
+          <button style={S.btn(showHeight)} onClick={() => setShowHeight(v => !v)} title="높이맵 표시/숨김">
+            {showHeight ? "◉" : "○"} {heightInfo}
+          </button>
+        )}
+        {heightInfo && showHeight && (
+          <label style={{ display: "flex", alignItems: "center", gap: 4 }} title="높이 과장 배율">
+            z×{zScale.toFixed(1)}
+            <input
+              type="range" min="0.5" max="5" step="0.5" value={zScale}
+              onChange={e => setZScale(parseFloat(e.target.value))}
+              style={{ width: 56 }}
+            />
+          </label>
+        )}
+        {heightInfo && showHeight && (
+          <label style={{ display: "flex", alignItems: "center", gap: 4 }} title="포인트 크기">
+            ● {ptSize.toFixed(1)}
+            <input
+              type="range" min="1" max="10" step="0.5" value={ptSize}
+              onChange={e => setPtSize(parseFloat(e.target.value))}
+              style={{ width: 56 }}
+            />
+          </label>
+        )}
+        {heightInfo && showHeight && (
+          <label style={{ display: "flex", alignItems: "center", gap: 3 }} title="기준 높이 z [m]">
+            z=
+            <input
+              type="number" step="0.1" value={zCut}
+              onChange={e => setZCut(parseFloat(e.target.value))}
+              style={{ width: 48, background: "rgba(0,0,0,0.4)", color: "#9fe", border: "1px solid rgba(0,212,255,0.3)", borderRadius: 3, fontSize: 10 }}
+            />
+            <button style={S.btn(false)} onClick={() => deleteByZ(true, zCut)} title="이 z보다 위 점 모두 삭제">↑날리기</button>
+            <button style={S.btn(false)} onClick={() => deleteByZ(false, zCut)} title="이 z보다 아래 점 모두 삭제">↓날리기</button>
+          </label>
+        )}
+        {heightInfo && showHeight && (
+          <>
+            <span style={{ opacity: 0.4 }}>|</span>
+            <button
+              style={S.btn(editMode)}
+              onClick={() => { setEditMode(v => !v); setPolygon([]); setCursor(null); }}
+              title="포인트 세그먼트 편집 (좌클릭으로 폴리곤, 우드래그로 회전)"
+            >
+              ✂ Edit
+            </button>
+          </>
+        )}
+        {editMode && (
+          <>
+            <button style={S.btn(false)} disabled={polygon.length < 3}
+              onClick={() => applyDelete(true)} title="폴리곤 안쪽 점 삭제">안쪽 삭제</button>
+            <button style={S.btn(false)} disabled={polygon.length < 3}
+              onClick={() => applyDelete(false)} title="폴리곤 바깥쪽 점 삭제">바깥 삭제</button>
+            <button style={S.btn(false)} disabled={!polygon.length}
+              onClick={() => { setPolygon(p => p.slice(0, -1)); }} title="마지막 점 취소">⮌ 점</button>
+            <button style={S.btn(false)} disabled={!polygon.length}
+              onClick={() => { setPolygon([]); setCursor(null); }} title="폴리곤 비우기">✕</button>
+          </>
+        )}
+        {heightInfo && showHeight && (
+          <>
+            <button style={S.btn(false)} onClick={undoEdit} title="마지막 삭제 되돌리기">↶ Undo</button>
+            <button style={S.btn(false)} onClick={saveHeightJson} title="편집 결과 JSON 저장">💾 Save</button>
+          </>
+        )}
       </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: "none" }}
+        onChange={e => { loadHeightFile(e.target.files?.[0]); e.target.value = ""; }}
+      />
       <div style={S.info}>
         <div>Frame: {fixedFrame || "map"}</div>
         <div>Pts: {lidarWorldPoints?.current?.length || 0}</div>
+        {heightInfo && <div>Height: {heightInfo}</div>}
+        {editMsg && <div style={{ color: "#ffd24a" }}>삭제: {editMsg}</div>}
       </div>
     </div>
   );
