@@ -58,6 +58,7 @@ const DEFAULT_BAG_RECORD_TOPICS = [
   "/odom",
   "/joint_states",
   "/scan_merged",
+  "/livox/lidar",
   "/camera/camera_head/color/image_raw/compressed",
   "/camera/camera_left/color/image_rect_raw/compressed",
   "/camera/camera_right/color/image_rect_raw/compressed",
