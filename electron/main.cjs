@@ -55,6 +55,7 @@ function shellQuote(value) {
 const DEFAULT_BAG_RECORD_DIR = process.env.MAP_UI_BAG_RECORD_DIR || "/home/nvidia/rby1_nav2/src/rby1_nav2/bag";
 const DEFAULT_BAG_RECORD_TOPICS = [
   "/tf",
+  "/tf_static",
   "/odom",
   "/joint_states",
   "/scan_merged",

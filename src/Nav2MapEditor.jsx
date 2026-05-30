@@ -178,6 +178,7 @@ const DEFAULT_BAG_RECORD_DIR = "/home/nvidia/rby1_nav2/src/rby1_nav2/bag";
 const DEFAULT_THOR_MD_DIR = import.meta.env.VITE_THOR_MD_DIR || "/home/thor/inha_ws/arena_info";
 const DEFAULT_BAG_RECORD_TOPICS = [
   "/tf",
+  "/tf_static",
   "/odom",
   "/joint_states",
   "/scan_merged",
