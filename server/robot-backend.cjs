@@ -114,6 +114,34 @@ function runShellCommand(command, options = {}) {
 }
 
 let heightmapProcess = null;
+let heightmapLastOutput = "";
+let heightmapOptions = null;
+
+function appendHeightmapOutput(data) {
+  heightmapLastOutput = appendOutput(heightmapLastOutput, data);
+}
+
+function resolveRosbagPath(inputPath) {
+  const bag = String(inputPath || "").trim();
+  if (!bag) throw new Error("bag path is required");
+  if (!fs.existsSync(bag)) throw new Error(`bag path not found: ${bag}`);
+  const stat = fs.statSync(bag);
+  if (!stat.isDirectory()) return bag;
+  if (fs.existsSync(path.join(bag, "metadata.yaml"))) return bag;
+
+  const nested = fs.readdirSync(bag, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => path.join(bag, entry.name))
+    .filter(dir => fs.existsSync(path.join(dir, "metadata.yaml")))
+    .sort((a, b) => fs.statSync(path.join(b, "metadata.yaml")).mtimeMs - fs.statSync(path.join(a, "metadata.yaml")).mtimeMs);
+
+  if (nested.length === 1) return nested[0];
+  if (nested.length > 1) {
+    const names = nested.slice(0, 5).map(dir => path.basename(dir)).join(", ");
+    throw new Error(`선택한 폴더는 bag 저장 루트입니다. 실제 bag 폴더를 선택하세요: ${names}`);
+  }
+  throw new Error(`rosbag metadata.yaml not found: ${bag}`);
+}
 
 function runHeightmapBuild(command, cwd) {
   return new Promise((resolve, reject) => {
@@ -123,11 +151,12 @@ function runHeightmapBuild(command, cwd) {
       cwd, env: { ...process.env }, detached: true, stdio: ["ignore", "pipe", "pipe"],
     });
     heightmapProcess = child;
-    child.stdout.on("data", d => { stdout += d.toString(); });
-    child.stderr.on("data", d => { stderr += d.toString(); });
+    child.stdout.on("data", d => { const t = d.toString(); stdout += t; appendHeightmapOutput(t); });
+    child.stderr.on("data", d => { const t = d.toString(); stderr += t; appendHeightmapOutput(t); });
     child.on("error", e => { if (heightmapProcess === child) heightmapProcess = null; reject(e); });
     child.on("close", (code, signal) => {
       if (heightmapProcess === child) heightmapProcess = null;
+      appendHeightmapOutput(`\n[heightmap exited code=${code} signal=${signal || ""}]\n`);
       if (code === 0) { resolve({ code, signal, stdout, stderr }); return; }
       if (signal) { reject(Object.assign(new Error("빌드 취소됨"), { cancelled: true, signal })); return; }
       const tail = (stderr || stdout).trim().split(/\r?\n/).slice(-3).join("\n");
@@ -823,8 +852,8 @@ const apiRoutes = {
   "POST /api/rosbag/info": async body => readBagInfo(body.path),
   "POST /api/heightmap/build": async body => {
     const scriptDir = body.scriptDir || path.join(__dirname, "..", "3d_map");
-    const bag = String(body.bag || "").trim();
-    if (!bag) throw new Error("bag path is required");
+    const requestedBag = String(body.bag || "").trim();
+    const bag = resolveRosbagPath(requestedBag);
     const out = String(body.out || "out_ui").trim();
     const parts = [shellQuote(body.python || "python3"), "build_height_map.py", "--bag", shellQuote(bag)];
     if (body.map) parts.push("--map", shellQuote(String(body.map)));
@@ -837,14 +866,21 @@ const apiRoutes = {
       : "--z-min 0.0 --z-max 2.5 --range-max 20 --voxel 0.02 --stride 2 --icp --view3d-cloud 300000";
     if (extra.trim()) parts.push(extra.trim());
     parts.push("--out", shellQuote(out));
+    heightmapLastOutput = "";
+    heightmapOptions = { requestedBag, bag, out, scriptDir, command: parts.join(" ") };
     const result = await runHeightmapBuild(parts.join(" "), scriptDir);
     const outDir = path.isAbsolute(out) ? out : path.join(scriptDir, out);
     const cloudPath = path.join(outDir, "cloud_view3d.json");
     const gridPath = path.join(outDir, "height_view3d.json");
     const resultPath = fs.existsSync(cloudPath) ? cloudPath : gridPath;
-    return { ...result, command: parts.join(" "), outDir, cloudPath, gridPath, resultPath };
+    return { ...result, command: parts.join(" "), requestedBag, bag, outDir, cloudPath, gridPath, resultPath };
   },
   "POST /api/heightmap/cancel": async () => ({ cancelled: stopHeightmapBuild() }),
+  "GET /api/heightmap/status": async () => ({
+    running: !!heightmapProcess,
+    output: heightmapLastOutput,
+    options: heightmapOptions,
+  }),
   "POST /api/costmap/build": async body => {
     const scriptDir = body.scriptDir || path.join(__dirname, "..", "3d_map");
     if (!body.map) throw new Error("map is required");

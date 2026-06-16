@@ -106,6 +106,7 @@ function createRobotBackendAPI(baseUrl) {
     rosbagRecordStatus: () => get("/api/rosbag/record/status"),
     heightmapBuild: (options) => post("/api/heightmap/build", options),
     heightmapCancel: () => post("/api/heightmap/cancel"),
+    heightmapStatus: () => get("/api/heightmap/status"),
     observeGoals: (options) => post("/api/observe/goals", options),
     costmapBuild: (options) => post("/api/costmap/build", options),
   };
@@ -4886,6 +4887,16 @@ export default function Nav2MapEditor() {
       const line=String(chunk).trim().split(/\r?\n/).filter(Boolean).pop();
       if(line)setStatus(`🛠 Bag→3D ${line}`);
     });
+    let pollTimer=null;
+    if(!hostAPI.onHeightmapProgress&&hostAPI.heightmapStatus){
+      pollTimer=setInterval(async()=>{
+        try{
+          const st=await hostAPI.heightmapStatus();
+          const line=String(st?.output||"").trim().split(/\r?\n/).filter(Boolean).pop();
+          if(line)setStatus(`${st?.running?"🛠":"■"} Bag→3D ${line}`);
+        }catch(_){}
+      },1000);
+    }
     try{
       const res=await hostAPI.heightmapBuild({
         bag,
@@ -4908,6 +4919,7 @@ export default function Nav2MapEditor() {
       return false;
     }finally{
       unsub?.();
+      if(pollTimer)clearInterval(pollTimer);
       setView3DBuilding(false);
     }
   },[bagPath,workspaceSync.mapPath]);

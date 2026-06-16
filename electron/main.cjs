@@ -521,6 +521,28 @@ function readBagInfo(bagPath) {
   };
 }
 
+function resolveRosbagPath(inputPath) {
+  const bag = String(inputPath || "").trim();
+  if (!bag) throw new Error("bag path is required");
+  if (!fs.existsSync(bag)) throw new Error(`bag path not found: ${bag}`);
+  const stat = fs.statSync(bag);
+  if (!stat.isDirectory()) return bag;
+  if (fs.existsSync(path.join(bag, "metadata.yaml"))) return bag;
+
+  const nested = fs.readdirSync(bag, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => path.join(bag, entry.name))
+    .filter(dir => fs.existsSync(path.join(dir, "metadata.yaml")))
+    .sort((a, b) => fs.statSync(path.join(b, "metadata.yaml")).mtimeMs - fs.statSync(path.join(a, "metadata.yaml")).mtimeMs);
+
+  if (nested.length === 1) return nested[0];
+  if (nested.length > 1) {
+    const names = nested.slice(0, 5).map(dir => path.basename(dir)).join(", ");
+    throw new Error(`선택한 폴더는 bag 저장 루트입니다. 실제 bag 폴더를 선택하세요: ${names}`);
+  }
+  throw new Error(`rosbag metadata.yaml not found: ${bag}`);
+}
+
 function currentBagOffset() {
   if (!bagProcess || !bagOptions) return bagOptions?.startOffset || 0;
   const now = bagPaused ? bagPausedAtMs : Date.now();
@@ -831,8 +853,7 @@ const DEFAULT_HEIGHTMAP_ARGS =
 function buildHeightMapCommand(options = {}) {
   const scriptDir = options.scriptDir || path.join(__dirname, "..", "3d_map");
   const python = options.python || "python3";
-  const bag = String(options.bag || "").trim();
-  if (!bag) throw new Error("bag path is required");
+  const bag = resolveRosbagPath(options.bag);
   const out = String(options.out || "out_ui").trim();
   const parts = [shellQuote(python), "build_height_map.py", "--bag", shellQuote(bag)];
   if (options.map) parts.push("--map", shellQuote(String(options.map)));
