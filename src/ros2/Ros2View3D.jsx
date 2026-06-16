@@ -441,7 +441,7 @@ function BuildPanel({ params, setParams, onPickBag, building, onClose, onBuild }
       <button
         style={{ ...S.btn(true), width: "100%", justifyContent: "center", padding: "5px", marginTop: 4, opacity: (building || !params.bag) ? 0.5 : 1 }}
         disabled={building || !params.bag}
-        onClick={onBuild}
+        onClick={() => onBuild(params)}
       >
         {building ? "빌드 중…" : "▶ 빌드 & 로드"}
       </button>
@@ -1303,7 +1303,10 @@ export default function Ros2View3D({
           onPickBag={onPickBag}
           building={building}
           onClose={() => setShowBuildPanel(false)}
-          onBuild={() => { setShowBuildPanel(false); onBuildFromBag(buildParams); }}
+          onBuild={async (params) => {
+            const ok = await onBuildFromBag(params);
+            if (ok) setShowBuildPanel(false);
+          }}
         />
       )}
       <div style={S.info}>

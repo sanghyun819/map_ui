@@ -4866,9 +4866,9 @@ export default function Nav2MapEditor() {
   },[pickHostPath,view3DHeightPath]);
 
   const buildView3DFromBag=useCallback(async(params={})=>{
-    if(!hostAPI?.heightmapBuild){setStatus("⚠ Bag→3D는 Electron 또는 robot backend에서만 가능합니다");return;}
+    if(!hostAPI?.heightmapBuild){setStatus("⚠ Bag→3D는 Electron 또는 robot backend에서만 가능합니다");return false;}
     const bag=params.bag||bagPath;
-    if(!bag){setStatus("⚠ 먼저 bag 폴더를 선택하세요");return;}
+    if(!bag){setStatus("⚠ 먼저 bag 폴더를 선택하세요");return false;}
     if(params.bag&&params.bag!==bagPath)setBagPath(params.bag);
     const p={voxel:0.02,stride:2,rangeMax:20,zMin:0,zMax:2.5,icp:true,points:300000,footprint:true,extra:"",...params};
     const args=[
@@ -4902,8 +4902,10 @@ export default function Nav2MapEditor() {
       setView3DHeightPath(resultPath);
       setView3DCloud({data:parsed,key:Date.now()});
       setStatus(`✅ Bag→3D 완료: ${parsed.count?.toLocaleString?.()||parsed.count} 점 (${basenameFromPath(resultPath)})`);
+      return true;
     }catch(e){
       setStatus(e?.cancelled||/취소/.test(e?.message||"")?"■ Bag→3D 취소됨":`⚠ Bag→3D 실패: ${e.message}`);
+      return false;
     }finally{
       unsub?.();
       setView3DBuilding(false);
