@@ -5371,19 +5371,6 @@ keepout_filter_mask_server:
     }
   },[saveMapBundle,slamMapStats,slamRunning,slamSaveName,nav2Running]);
 
-  const chooseMapYamlPath=useCallback(async()=>{
-    const selected=await pickWorkspacePath({
-      title:"맵 YAML 선택",
-      defaultPath: DEFAULT_MAP_SEARCH_DIR,
-      filters:[{name:"YAML",extensions:["yaml","yml"]},{name:"All files",extensions:["*"]}],
-      properties:["openFile"],
-    });
-    if(!selected)return;
-    const mapPath=Array.isArray(selected)?selected[0]:selected;
-    setWorkspaceSync(prev=>({...prev,mapPath}));
-    setStatus(`✅ 맵 YAML 선택: ${basenameFromPath(mapPath)}`);
-  },[pickWorkspacePath]);
-
   const chooseWorkspaceRoot=useCallback(async()=>{
     const selected=await pickWorkspacePath({
       title:"ROS2 워크스페이스 선택",
@@ -6145,15 +6132,6 @@ keepout_filter_mask_server:
           <h3 style={{margin:"0 0 16px",color:"#00d4ff",letterSpacing:1}}>🏗 빌드</h3>
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             <label style={{display:"flex",flexDirection:"column",gap:4}}>
-              <span style={{fontSize:10,color:"rgba(0,212,255,0.5)"}}>맵 YAML 경로</span>
-              <div style={{display:"flex",gap:6}}>
-                <input value={workspaceSync.mapPath} onChange={e=>setWorkspaceSync(prev=>({...prev,mapPath:e.target.value}))}
-                  placeholder={DEFAULT_MAP_SEARCH_DIR}
-                  style={{...INPUT,flex:1,minWidth:0}}/>
-                <button style={btn()} onClick={chooseMapYamlPath} disabled={workspaceBusy}>찾기</button>
-              </div>
-            </label>
-            <label style={{display:"flex",flexDirection:"column",gap:4}}>
               <span style={{fontSize:10,color:"rgba(0,212,255,0.5)"}}>package 이름</span>
               <input value={workspaceSync.packageName} onChange={e=>setWorkspaceSync(prev=>({...prev,packageName:e.target.value}))}
                 placeholder="rby1_nav2"
@@ -6169,7 +6147,7 @@ keepout_filter_mask_server:
               </div>
             </label>
             <div style={{fontSize:10,color:"rgba(0,212,255,0.3)",lineHeight:1.7,padding:"8px 10px",background:"rgba(0,212,255,0.04)",borderRadius:5}}>
-              launch 파일은 수정하지 않고, 지정한 워크스페이스에서 <b>colcon build</b>만 실행합니다. 맵 찾기 기본 폴더는 <b>{DEFAULT_MAP_SEARCH_DIR}</b>입니다.
+              맵 YAML은 지정하지 않고, 선택한 ROS2 워크스페이스에서 <b>{workspaceSync.packageName||"rby1_nav2"}</b> package만 빌드합니다.
             </div>
           </div>
           <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:18}}>
