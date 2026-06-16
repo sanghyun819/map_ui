@@ -2692,7 +2692,7 @@ export default function Nav2MapEditor() {
   // ── ROS2 overlay hook ──
   const requestRos2Draw = useCallback(() => { drawOverlayRef.current?.(); }, []);
   const onRos2Frames = useCallback((list) => setRos2AvailFrames(list), []);
-  const { drawRos2, stats: ros2Stats, lidarWorldPoints, pathWorldPoints, cameraDataUrl } = useRos2Overlay(
+  const { drawRos2, stats: ros2Stats, lidarWorldPoints, pathWorldPoints, cameraDataUrl, lookupTransform3D } = useRos2Overlay(
     ros2Bridge, ros2Vis, meta, canvasSize, requestRos2Draw, ros2Frames, onRos2Frames
   );
   const drawOverlayRef = useRef(null);
@@ -4861,6 +4861,11 @@ export default function Nav2MapEditor() {
     setView3DBuilding(true);
     setShow3DView(true);
     setStatus(`🛠 Bag→3D 빌드 중… (취소: 버튼 재클릭) ${basenameFromPath(bag)}`);
+    // Stream the python build log to the status bar so progress is visible.
+    const unsub=hostAPI.onHeightmapProgress?.(chunk=>{
+      const line=String(chunk).trim().split(/\r?\n/).filter(Boolean).pop();
+      if(line)setStatus(`🛠 Bag→3D ${line}`);
+    });
     try{
       const res=await hostAPI.heightmapBuild({
         bag,
@@ -4879,6 +4884,7 @@ export default function Nav2MapEditor() {
     }catch(e){
       setStatus(e?.cancelled||/취소/.test(e?.message||"")?"■ Bag→3D 취소됨":`⚠ Bag→3D 실패: ${e.message}`);
     }finally{
+      unsub?.();
       setView3DBuilding(false);
     }
   },[bagPath,workspaceSync.mapPath]);
@@ -5115,7 +5121,18 @@ export default function Nav2MapEditor() {
     const mapPath=workspaceSync.mapPath;
     if(!mapPath){setStatus("⚠ 맵을 먼저 저장/로드하세요 (map .yaml 경로 필요)");return;}
     const dir=dirnameFromPath(mapPath);
-    setRecoBusy(true);setStatus(`📷 ${carrier.label||carrier.id} 관측 골 계산 중…`);
+    // Camera height + tilt from the LIVE TF (rosbridge) — map→camera optical frame.
+    let camHeight,camTilt;
+    const ctf=lookupTransform3D?.("camera_head_color_optical_frame");
+    if(ctf?.tf){
+      const {z,qx,qy,qz,qw}=ctf.tf;
+      const fz=1-2*(qx*qx+qy*qy);                 // optical z-axis (forward) .z in map
+      camHeight=+Number(z).toFixed(3);
+      camTilt=+(Math.asin(Math.max(-1,Math.min(1,fz)))*180/Math.PI).toFixed(2);
+    }
+    setRecoBusy(true);
+    setStatus(camHeight!=null?`📷 ${carrier.label||carrier.id} 관측 골 (TF: h=${camHeight}m, tilt=${camTilt}°)…`
+      :`📷 ${carrier.label||carrier.id} 관측 골 (TF 없음 → 기본 -20°)…`);
     try{
       const semPath=`${dir}/_ui_semantic.json`;
       await hostAPI.writeFile(semPath,buildSemanticJSON(),"utf-8");
@@ -5123,6 +5140,7 @@ export default function Nav2MapEditor() {
         semantic:semPath, map:mapPath, carrier:carrier.id, top:4,
         nav2Params:nav2ParamsPath||undefined,
         cameraInfoBag:bagPath||undefined,
+        camHeight, camTilt,
         viewFace:carrier.view_face||undefined,
         frontEdge:(carrier.front_edge!=null?carrier.front_edge:undefined),
         zStart:(carrier.z_start!=null?carrier.z_start:undefined),
@@ -5141,7 +5159,7 @@ export default function Nav2MapEditor() {
     }finally{
       setRecoBusy(false);
     }
-  },[carriers,selSemId,workspaceSync.mapPath,bagPath,nav2ParamsPath,buildSemanticJSON,meta,canvasSize]);
+  },[carriers,selSemId,workspaceSync.mapPath,bagPath,nav2ParamsPath,lookupTransform3D,buildSemanticJSON,meta,canvasSize]);
 
   const saveMapBundle=useCallback(async(defaultBase=meta.filename)=>{
     const c=canvasRef.current;if(!c)return null;

@@ -877,6 +877,8 @@ const apiRoutes = {
     }
     if (nav2) parts.push("--nav2-params", shellQuote(String(nav2)));
     if (body.cameraInfoBag) parts.push("--camera-info-bag", shellQuote(String(body.cameraInfoBag)));
+    if (body.camHeight != null) parts.push("--cam-height", String(body.camHeight));
+    if (body.camTilt != null) parts.push("--cam-tilt", String(body.camTilt));
     if (body.viewFace) parts.push("--view-face", String(body.viewFace));
     if (body.frontEdge != null) parts.push("--front-edge", String(body.frontEdge));
     if (body.frontYaw != null) parts.push("--front-yaw", String(body.frontYaw));

@@ -859,8 +859,9 @@ function runHeightmapBuild(command, cwd) {
       cwd, env: { ...process.env }, detached: true, stdio: ["ignore", "pipe", "pipe"],
     });
     heightmapProcess = child;
-    child.stdout.on("data", d => { stdout += d.toString(); });
-    child.stderr.on("data", d => { stderr += d.toString(); });
+    const emit = t => { try { mainWindow && mainWindow.webContents.send("heightmap:progress", t); } catch { /* window gone */ } };
+    child.stdout.on("data", d => { const t = d.toString(); stdout += t; emit(t); });
+    child.stderr.on("data", d => { const t = d.toString(); stderr += t; emit(t); });
     child.on("error", e => { if (heightmapProcess === child) heightmapProcess = null; reject(e); });
     child.on("close", (code, signal) => {
       if (heightmapProcess === child) heightmapProcess = null;
@@ -938,6 +939,8 @@ ipcMain.handle("observe:goals", async (event, options = {}) => {
   }
   if (nav2) parts.push("--nav2-params", shellQuote(String(nav2)));
   if (options.cameraInfoBag) parts.push("--camera-info-bag", shellQuote(String(options.cameraInfoBag)));
+  if (options.camHeight != null) parts.push("--cam-height", String(options.camHeight));
+  if (options.camTilt != null) parts.push("--cam-tilt", String(options.camTilt));
   if (options.viewFace) parts.push("--view-face", String(options.viewFace));
   if (options.frontEdge != null) parts.push("--front-edge", String(options.frontEdge));
   if (options.frontYaw != null) parts.push("--front-yaw", String(options.frontYaw));

@@ -44,6 +44,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Build a 3D point cloud / height map from a rosbag
   heightmapBuild: (options) => ipcRenderer.invoke("heightmap:build", options),
   heightmapCancel: () => ipcRenderer.invoke("heightmap:cancel"),
+  onHeightmapProgress: (cb) => {
+    const h = (_e, msg) => cb(msg);
+    ipcRenderer.on("heightmap:progress", h);
+    return () => ipcRenderer.removeListener("heightmap:progress", h);
+  },
   observeGoals: (options) => ipcRenderer.invoke("observe:goals", options),
   costmapBuild: (options) => ipcRenderer.invoke("costmap:build", options),
   rosbagStop: () => ipcRenderer.invoke("rosbag:stop"),

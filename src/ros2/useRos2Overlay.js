@@ -1242,5 +1242,6 @@ export default function useRos2Overlay(bridge, vis, meta, canvasSize, requestDra
     pathPoints: pathRef,
     pathWorldPoints: pathWorldRef,
     stats: statsRef,
+    lookupTransform3D,
   };
 }

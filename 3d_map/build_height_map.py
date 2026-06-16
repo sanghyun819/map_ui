@@ -606,6 +606,8 @@ def accumulate_source(reader, topic, is_primary, tf_buf, args, icp, footprint, c
         stats["total"] += n
         stats["pending"] = stats.get("pending", 0) + n
         used += 1
+        if used % 100 == 0:                                  # live progress (streamed to the UI)
+            print(f"[progress] {topic}: {used} clouds, {stats['total'] // 1000}k pts", flush=True)
         # Memory cap: when --voxel is set, periodically collapse what we've
         # accumulated so dense streams (e.g. depth/color/points) don't OOM.
         # Skipped with --min-hits, which needs the raw per-voxel hit counts.
