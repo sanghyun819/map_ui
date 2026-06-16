@@ -460,6 +460,7 @@ export default function Ros2View3D({
   viewMode = "free",
   onChangeViewMode,
   externalCloud,
+  onOpenHeightJson,
   onBuildFromBag,
   onCancelBuild,
   onPickBag,
@@ -526,39 +527,9 @@ export default function Ros2View3D({
     return () => window.removeEventListener("keydown", onKey);
   }, [editMode]);
 
-  const loadHeightFile = (file) => {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const json = JSON.parse(reader.result);
-        const data = parseHeightMap(json);
-        if (!data) { setHeightInfo("로드 실패: 빈 데이터"); return; }
-        heightMapRef.current = data;
-        heightMetaRef.current = {
-          type: json.type || "height_map_view3d",
-          frame: json.frame || "map",
-          resolution: json.resolution,
-          origin: json.origin,
-          z_min: json.z_min,
-          z_max: json.z_max,
-        };
-        undoRef.current = [];
-        setHeightInfo(`${data.count.toLocaleString()} pts`);
-      } catch (err) {
-        console.error("[3D] height map parse error:", err);
-        setHeightInfo("로드 실패: JSON 오류");
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  // Load a cloud built from a bag (cloud_view3d.json / height_view3d.json) programmatically.
-  useEffect(() => {
-    const json = externalCloud?.data;
-    if (!json) return;
+  const loadHeightJson = (json) => {
     const data = parseHeightMap(json);
-    if (!data) { setHeightInfo("로드 실패: 빈 데이터"); return; }
+    if (!data) { setHeightInfo("로드 실패: 빈 데이터"); return false; }
     heightMapRef.current = data;
     heightMetaRef.current = {
       type: json.type || "height_map_view3d",
@@ -570,6 +541,44 @@ export default function Ros2View3D({
     };
     undoRef.current = [];
     setHeightInfo(`${data.count.toLocaleString()} pts`);
+    return true;
+  };
+
+  const loadHeightFile = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const json = JSON.parse(reader.result);
+        loadHeightJson(json);
+      } catch (err) {
+        console.error("[3D] height map parse error:", err);
+        setHeightInfo("로드 실패: JSON 오류");
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const openHeightJson = async () => {
+    if (!onOpenHeightJson) {
+      fileInputRef.current?.click();
+      return;
+    }
+    try {
+      const loaded = await onOpenHeightJson();
+      if (!loaded?.json) return;
+      loadHeightJson(loaded.json);
+    } catch (err) {
+      console.error("[3D] height map host-load error:", err);
+      setHeightInfo("로드 실패: JSON 오류");
+    }
+  };
+
+  // Load a cloud built from a bag (cloud_view3d.json / height_view3d.json) programmatically.
+  useEffect(() => {
+    const json = externalCloud?.data;
+    if (!json) return;
+    loadHeightJson(json);
   }, [externalCloud?.key]);
 
   // ---- CloudCompare-style polygon segmentation -------------------------------
@@ -1183,7 +1192,7 @@ export default function Ros2View3D({
             {building ? "⏳ 빌드중… ✕취소" : "🛠 Bag→3D"}
           </button>
         )}
-        <button style={S.btn(false)} onClick={() => fileInputRef.current?.click()} title="height_view3d.json / cloud_view3d.json 로드">Height ⬆</button>
+        <button style={S.btn(false)} onClick={openHeightJson} title="height_view3d.json / cloud_view3d.json 로드">Height ⬆</button>
         {heightInfo && (
           <button style={S.btn(showHeight)} onClick={() => setShowHeight(v => !v)} title="높이맵 표시/숨김">
             {showHeight ? "◉" : "○"} {heightInfo}

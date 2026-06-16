@@ -2472,6 +2472,7 @@ export default function Nav2MapEditor() {
   const [view3DWidth, setView3DWidth] = useState(460);
   const [view3DBuilding, setView3DBuilding] = useState(false);
   const [view3DCloud, setView3DCloud] = useState(null);   // parsed cloud_view3d.json for the 3D view
+  const [view3DHeightPath, setView3DHeightPath] = useState("");
   const view3DResizing = useRef(false);
   const [bagPath, setBagPath] = useState("");
   const [bagRunning, setBagRunning] = useState(false);
@@ -4845,6 +4846,25 @@ export default function Nav2MapEditor() {
     return picked||null;
   },[bagPath,pickHostPath]);
 
+  const openHeightJsonFor3D=useCallback(async()=>{
+    if(!hostAPI?.readFile){setStatus("⚠ Height JSON 로드는 Electron 또는 robot backend에서만 가능합니다");return null;}
+    const filePath=await pickHostPath({
+      title:"3D height JSON 선택",
+      defaultPath:view3DHeightPath||DEFAULT_BAG_RECORD_DIR,
+      filters:[
+        {name:"3D height JSON",extensions:["json"]},
+        {name:"All files",extensions:["*"]},
+      ],
+      properties:["openFile"],
+    });
+    if(!filePath)return null;
+    const text=await hostAPI.readFile(filePath,"utf-8");
+    const json=JSON.parse(text);
+    setView3DHeightPath(filePath);
+    setStatus(`✅ 3D height 로드: ${basenameFromPath(filePath)}`);
+    return {json,path:filePath,name:basenameFromPath(filePath)};
+  },[pickHostPath,view3DHeightPath]);
+
   const buildView3DFromBag=useCallback(async(params={})=>{
     if(!hostAPI?.heightmapBuild){setStatus("⚠ Bag→3D는 Electron 또는 robot backend에서만 가능합니다");return;}
     const bag=params.bag||bagPath;
@@ -4879,6 +4899,7 @@ export default function Nav2MapEditor() {
       if(!resultPath){throw new Error("출력 파일 경로를 못 받음");}
       const text=await hostAPI.readFile(resultPath,"utf-8");
       const parsed=JSON.parse(text);
+      setView3DHeightPath(resultPath);
       setView3DCloud({data:parsed,key:Date.now()});
       setStatus(`✅ Bag→3D 완료: ${parsed.count?.toLocaleString?.()||parsed.count} 점 (${basenameFromPath(resultPath)})`);
     }catch(e){
@@ -5819,6 +5840,7 @@ keepout_filter_mask_server:
                   viewMode={view3DMode}
                   onChangeViewMode={setView3DMode}
                   externalCloud={view3DCloud}
+                  onOpenHeightJson={hostAPI?.readFile?openHeightJsonFor3D:undefined}
                   onBuildFromBag={hostAPI?.heightmapBuild?buildView3DFromBag:undefined}
                   onCancelBuild={hostAPI?.heightmapCancel?cancelView3DBuild:undefined}
                   onPickBag={hostAPI?.heightmapBuild?pickBagForBuild:undefined}
