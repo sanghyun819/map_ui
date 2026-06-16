@@ -113,6 +113,37 @@ function runShellCommand(command, options = {}) {
   });
 }
 
+let heightmapProcess = null;
+
+function runHeightmapBuild(command, cwd) {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    const child = spawn("bash", ["-lc", command], {
+      cwd, env: { ...process.env }, detached: true, stdio: ["ignore", "pipe", "pipe"],
+    });
+    heightmapProcess = child;
+    child.stdout.on("data", d => { stdout += d.toString(); });
+    child.stderr.on("data", d => { stderr += d.toString(); });
+    child.on("error", e => { if (heightmapProcess === child) heightmapProcess = null; reject(e); });
+    child.on("close", (code, signal) => {
+      if (heightmapProcess === child) heightmapProcess = null;
+      if (code === 0) { resolve({ code, signal, stdout, stderr }); return; }
+      if (signal) { reject(Object.assign(new Error("빌드 취소됨"), { cancelled: true, signal })); return; }
+      const tail = (stderr || stdout).trim().split(/\r?\n/).slice(-3).join("\n");
+      reject(Object.assign(new Error(`build failed code ${code}${tail ? `: ${tail}` : ""}`), { code, stdout, stderr }));
+    });
+  });
+}
+
+function stopHeightmapBuild() {
+  if (!heightmapProcess) return false;
+  const pid = heightmapProcess.pid;
+  try { process.kill(-pid, "SIGTERM"); } catch { /* already gone */ }
+  setTimeout(() => { try { process.kill(-pid, "SIGKILL"); } catch { /* gone */ } }, 1500);
+  return true;
+}
+
 async function copySemanticToThor(options = {}) {
   const sourcePath = String(options.sourcePath || "").trim();
   if (!sourcePath) throw new Error("sourcePath is required");
@@ -790,6 +821,73 @@ const apiRoutes = {
   "GET /api/nav2/status": async () => ({ running: !!nav2Process, output: nav2LastOutput, options: nav2Options }),
   "POST /api/rosbag/play": async body => startBagProcess(body || {}),
   "POST /api/rosbag/info": async body => readBagInfo(body.path),
+  "POST /api/heightmap/build": async body => {
+    const scriptDir = body.scriptDir || path.join(__dirname, "..", "3d_map");
+    const bag = String(body.bag || "").trim();
+    if (!bag) throw new Error("bag path is required");
+    const out = String(body.out || "out_ui").trim();
+    const parts = [shellQuote(body.python || "python3"), "build_height_map.py", "--bag", shellQuote(bag)];
+    if (body.map) parts.push("--map", shellQuote(String(body.map)));
+    if (body.urdf) parts.push("--urdf", shellQuote(String(body.urdf)));
+    if (body.footprint) {
+      parts.push("--footprint", shellQuote(String(body.footprint)));
+      if (body.footprintFrame) parts.push("--footprint-frame", shellQuote(String(body.footprintFrame)));
+    }
+    const extra = body.args != null ? String(body.args)
+      : "--z-min 0.0 --z-max 2.5 --range-max 20 --voxel 0.02 --stride 2 --icp --view3d-cloud 300000";
+    if (extra.trim()) parts.push(extra.trim());
+    parts.push("--out", shellQuote(out));
+    const result = await runHeightmapBuild(parts.join(" "), scriptDir);
+    const outDir = path.isAbsolute(out) ? out : path.join(scriptDir, out);
+    const cloudPath = path.join(outDir, "cloud_view3d.json");
+    const gridPath = path.join(outDir, "height_view3d.json");
+    const resultPath = fs.existsSync(cloudPath) ? cloudPath : gridPath;
+    return { ...result, command: parts.join(" "), outDir, cloudPath, gridPath, resultPath };
+  },
+  "POST /api/heightmap/cancel": async () => ({ cancelled: stopHeightmapBuild() }),
+  "POST /api/costmap/build": async body => {
+    const scriptDir = body.scriptDir || path.join(__dirname, "..", "3d_map");
+    if (!body.map) throw new Error("map is required");
+    const overlay = path.join(scriptDir, "out_costmap_overlay.png");
+    let nav2 = body.nav2Params;
+    if (!nav2) {
+      const def = path.join(scriptDir, "..", "src", "semantic_nav2_package", "pkg", "semantic_nav2", "config", "nav2_params.yaml");
+      if (fs.existsSync(def)) nav2 = def;
+    }
+    if (!nav2) throw new Error("nav2_params.yaml not found (pass nav2Params)");
+    const parts = [shellQuote(body.python || "python3"), "nav2_costmap.py",
+      "--map", shellQuote(String(body.map)), "--nav2-params", shellQuote(String(nav2)),
+      "--ns", String(body.ns || "global_costmap"), "--overlay", shellQuote(overlay)];
+    const result = await runShellCommand(parts.join(" "), { cwd: scriptDir });
+    const data = fs.readFileSync(overlay);
+    return { ...result, overlayPath: overlay, nav2Params: nav2, overlayBase64: Buffer.from(data).toString("base64") };
+  },
+  "POST /api/observe/goals": async body => {
+    const scriptDir = body.scriptDir || path.join(__dirname, "..", "3d_map");
+    if (!body.semantic || !body.map || body.carrier == null) throw new Error("semantic, map, carrier required");
+    const outPath = path.join(scriptDir, "out_ui_goals.json");
+    const parts = [shellQuote(body.python || "python3"), "observe_carrier.py",
+      "--semantic", shellQuote(String(body.semantic)), "--map", shellQuote(String(body.map)),
+      "--carrier", shellQuote(String(body.carrier)), "--top", String(body.top || 4),
+      "--out", shellQuote(outPath)];
+    let nav2 = body.nav2Params;
+    if (!nav2) {
+      const def = path.join(scriptDir, "..", "src", "semantic_nav2_package", "pkg", "semantic_nav2", "config", "nav2_params.yaml");
+      if (fs.existsSync(def)) nav2 = def;
+    }
+    if (nav2) parts.push("--nav2-params", shellQuote(String(nav2)));
+    if (body.cameraInfoBag) parts.push("--camera-info-bag", shellQuote(String(body.cameraInfoBag)));
+    if (body.viewFace) parts.push("--view-face", String(body.viewFace));
+    if (body.frontEdge != null) parts.push("--front-edge", String(body.frontEdge));
+    if (body.frontYaw != null) parts.push("--front-yaw", String(body.frontYaw));
+    if (body.zStart != null) parts.push("--z-start", String(body.zStart));
+    if (body.zEnd != null) parts.push("--z-end", String(body.zEnd));
+    if (body.robotRadius != null) parts.push("--robot-radius", String(body.robotRadius));
+    const result = await runShellCommand(parts.join(" "), { cwd: scriptDir });
+    const data = JSON.parse(fs.readFileSync(outPath, "utf-8"));
+    const goals = Array.isArray(data) ? data : (data.goals || [data]);
+    return { ...result, goals, nav2Params: nav2 || null };
+  },
   "POST /api/rosbag/stop": async () => ({ running: false, stopped: stopBagProcess() }),
   "POST /api/rosbag/pause": async () => {
     if (!bagProcess || bagPaused) return { running: !!bagProcess, paused: bagPaused, offset: currentBagOffset() };

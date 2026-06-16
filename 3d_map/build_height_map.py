@@ -31,6 +31,7 @@ Outputs (written to --out, default ./out):
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import sys
 from pathlib import Path
@@ -40,6 +41,7 @@ import numpy as np
 from pointcloud2 import read_cloud
 from tf_buffer import TfBuffer
 from urdf_static import inject_urdf_static
+from colorize import Colorizer
 
 try:
     from rosbags.highlevel import AnyReader
@@ -150,6 +152,8 @@ def main() -> None:
     ap.add_argument("--voxel", type=float, default=0.0,
                     help="Voxel-downsample the merged cloud to this leaf size [m] (0 = off)")
     ap.add_argument("--stride", type=int, default=1, help="Use every Nth lidar message (speed/size tradeoff)")
+    ap.add_argument("--extra-stride", type=int, default=0,
+                    help="Separate stride for --extra-cloud topics (depth is dense; default = 5x --stride)")
     # ICP registration refinement (corrects SLAM drift; does NOT remove moving objects)
     ap.add_argument("--icp", action="store_true", help="Refine each scan onto the running map with point-to-point ICP")
     ap.add_argument("--icp-voxel", type=float, default=0.1, help="Voxel leaf [m] for ICP scan/map (default 0.1)")
@@ -173,6 +177,12 @@ def main() -> None:
     ap.add_argument("--color-frame", help="Camera optical frame (else taken from camera_info/image header)")
     ap.add_argument("--extra-cloud", action="append", default=[],
                     help="Extra PointCloud2 topic to fuse, e.g. /camera/.../depth/color/points (repeatable)")
+    ap.add_argument("--grid-res", type=float, default=0.0,
+                    help="Height-grid resolution [m] for elevation/height_view3d outputs, finer than the "
+                         "2D map (e.g. 0.02). 0 = use the map's resolution. Same origin, so still aligned.")
+    ap.add_argument("--view3d-cloud", type=int, default=0,
+                    help="Also export cloud_view3d.json: the FULL 3D coloured cloud (keeps vertical detail, "
+                         "not just the top surface) downsampled to this many points for map_ui. e.g. 300000.")
     ap.add_argument("--max-points", type=int, default=0,
                     help="Stop accumulating after this many raw points (0 = no limit)")
     args = ap.parse_args()
@@ -214,97 +224,44 @@ def main() -> None:
             tf_buf.add_tf_message(msg, static=(conn.topic == tf_static_topic))
         print(f"[tf]  frames seen: {sorted(tf_buf.frames)}")
 
-        # Second pass: accumulate lidar clouds transformed into the map frame.
-        lidar_conns = [c for c in reader.connections if c.topic == lidar_topic]
-        chunks: list[np.ndarray] = []
-        total = 0
-        used = 0
-        missing_tf = 0
-        sensor_frame = None
+        # Optional colouriser: load camera intrinsics + colour images up front.
+        colorizer = setup_colorizer(reader, args)
 
         # ICP state: a running voxel map (target) + a forward-carried correction.
         icp = ICPState(args) if args.icp else None
 
         footprint = parse_footprint(args.footprint, args.footprint_margin) if args.footprint else None
-        self_removed = 0
         if footprint is not None:
             print(f"[self] footprint removal in '{args.footprint_frame}' ({len(footprint)} verts, "
                   f"margin {args.footprint_margin} m)")
 
-        for i, (conn, ts, raw) in enumerate(reader.messages(connections=lidar_conns)):
-            if args.stride > 1 and (i % args.stride) != 0:
-                continue
-            msg = reader.deserialize(raw, conn.msgtype)
-            sensor_frame = (msg.header.frame_id or sensor_frame or "").lstrip("/")
-            stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
-            if stamp_ns == 0:
-                stamp_ns = ts  # fall back to bag receive time
+        # Cloud sources to fuse: primary lidar (gets ICP) + any extra (already-coloured) clouds.
+        sources = [(lidar_topic, True)] + [(t, False) for t in args.extra_cloud]
 
-            pts = read_cloud(msg, conn.msgtype)
-            if pts.shape[0] == 0:
-                continue
+        # Per-source accumulation. Each block is (N,6) = x,y,z,r,g,b (rgb NaN if unknown).
+        chunks: list[np.ndarray] = []
+        stats = {"total": 0, "self_removed": 0, "missing_tf": 0, "colored": 0, "last_frame": None}
 
-            if args.range_max > 0:
-                d = np.linalg.norm(pts[:, :3], axis=1)
-                pts = pts[d <= args.range_max]
-                if pts.shape[0] == 0:
-                    continue
+        for topic, is_primary in sources:
+            n_used = accumulate_source(
+                reader, topic, is_primary, tf_buf, args, icp, footprint, colorizer, chunks, stats,
+            )
+            tag = "lidar" if is_primary else "extra"
+            print(f"[scan] {topic} ({tag}): {n_used} clouds used")
 
-            map_T_lidar = tf_buf.lookup(args.map_frame, sensor_frame, stamp_ns)
-            if map_T_lidar is None:
-                missing_tf += 1
-                continue
-
-            # Robot self-removal: test each point in the footprint frame (e.g. base_nav)
-            # and drop the ones inside the robot outline — these are the robot hitting itself.
-            if footprint is not None:
-                fp_T_sensor = tf_buf.lookup(args.footprint_frame, sensor_frame, stamp_ns)
-                if fp_T_sensor is not None:
-                    xyz_s = pts[:, :3]
-                    fp_xy = (fp_T_sensor @ np.column_stack([xyz_s, np.ones(len(xyz_s))]).T).T[:, :2]
-                    inside = points_in_polygon(fp_xy, footprint)
-                    if inside.any():
-                        pts = pts[~inside]
-                        self_removed += int(inside.sum())
-                        if pts.shape[0] == 0:
-                            continue
-
-            xyz = pts[:, :3]
-
-            if icp is not None:
-                # Refine the TF pose against the running map, then transform with it.
-                pose = icp.refine(xyz, map_T_lidar)
-            else:
-                pose = map_T_lidar
-
-            xyz_h = np.column_stack([xyz, np.ones(len(xyz))])
-            xyz_map = (pose @ xyz_h.T).T[:, :3]
-
-            zsel = (xyz_map[:, 2] >= args.z_min) & (xyz_map[:, 2] <= args.z_max)
-            xyz_map = xyz_map[zsel]
-            extra = pts[zsel, 3:] if pts.shape[1] > 3 else None
-            block = np.column_stack([xyz_map, extra]) if extra is not None else xyz_map
-
-            if icp is not None:
-                icp.add_to_map(xyz_map)
-
-            chunks.append(block)
-            total += len(block)
-            used += 1
-            if args.max_points and total >= args.max_points:
-                print(f"[scan] reached --max-points ({args.max_points}); stopping")
-                break
-
-        if missing_tf:
-            print(f"[tf]  {missing_tf} scans had no map->{sensor_frame} transform (skipped)")
+        sensor_frame = stats["last_frame"]
+        if stats["missing_tf"]:
+            print(f"[tf]  {stats['missing_tf']} scans had no map->sensor transform (skipped)")
         if footprint is not None:
-            print(f"[self] removed {self_removed} robot self-points inside the footprint")
+            print(f"[self] removed {stats['self_removed']} robot self-points inside the footprint")
+        if colorizer is not None:
+            print(f"[color] painted {stats['colored']} lidar points from the camera image")
         if icp is not None:
             print(f"[icp] refined {icp.refined} scans (mean inlier {icp.mean_inlier():.0%}, "
                   f"mean corr {icp.mean_err():.3f} m)")
         if not chunks:
             hint = ""
-            if missing_tf and not args.urdf and sensor_frame and sensor_frame not in tf_buf.frames:
+            if stats["missing_tf"] and not args.urdf and sensor_frame and sensor_frame not in tf_buf.frames:
                 default_urdf = Path(__file__).resolve().parent / "rby1.urdf"
                 suggest = "rby1.urdf" if default_urdf.exists() else "<robot.urdf>"
                 hint = (f"\nThe sensor frame '{sensor_frame}' is not in the TF tree — this bag has no "
@@ -312,7 +269,7 @@ def main() -> None:
             sys.exit("No points accumulated. Check --map-frame / sensor frame / TF tree." + hint)
 
         cloud = np.vstack(chunks)
-        print(f"[scan] {used} clouds used, {cloud.shape[0]} points in map frame")
+        print(f"[scan] total {cloud.shape[0]} points in map frame")
 
     if args.save_raw:
         np.save(out_dir / "raw_cloud.npy", cloud[:, :3].astype(np.float32))
@@ -333,6 +290,8 @@ def main() -> None:
 
     # ---- save merged cloud -----------------------------------------------
     save_cloud(out_dir, cloud)
+    if args.view3d_cloud > 0:
+        save_cloud_view3d(out_dir / "cloud_view3d.json", cloud, args.view3d_cloud, args.map_frame)
 
     # ---- rasterise to elevation grid -------------------------------------
     if map_origin is None:
@@ -344,17 +303,27 @@ def main() -> None:
         mh = int(np.ceil((max_xy[1] - min_xy[1]) / map_res))
         map_size = (mw, mh)
 
-    grid, zmin, zmax = rasterise(cloud, map_res, map_origin, map_size, args.stat)
+    # Height grid can be finer than the 2D map (denser view), same origin so still aligned.
+    grid_res = args.grid_res if args.grid_res > 0 else map_res
+    if grid_res != map_res:
+        ext_x = map_size[0] * map_res
+        ext_y = map_size[1] * map_res
+        grid_size = (int(np.ceil(ext_x / grid_res)), int(np.ceil(ext_y / grid_res)))
+        print(f"[grid] height grid @ {grid_res} m -> {grid_size[0]}x{grid_size[1]} cells")
+    else:
+        grid_size = map_size
+
+    grid, cgrid, zmin, zmax = rasterise(cloud, grid_res, map_origin, grid_size, args.stat)
     np.save(out_dir / "elevation.npy", grid.astype(np.float32))
     save_geotiff_like(out_dir / "elevation.tif", grid)
-    save_color_png(out_dir / "elevation_color.png", grid)
-    save_view3d_json(out_dir / "height_view3d.json", grid, map_res, map_origin, zmin, zmax, args.map_frame)
+    save_color_png(out_dir / "elevation_color.png", grid, cgrid)
+    save_view3d_json(out_dir / "height_view3d.json", grid, cgrid, grid_res, map_origin, zmin, zmax, args.map_frame)
 
     meta = {
-        "resolution": map_res,
+        "resolution": grid_res,
         "origin": map_origin,
-        "width": map_size[0],
-        "height": map_size[1],
+        "width": grid_size[0],
+        "height": grid_size[1],
         "z_min": float(zmin),
         "z_max": float(zmax),
         "stat": args.stat,
@@ -369,9 +338,17 @@ def main() -> None:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _voxel_keys(xyz: np.ndarray, leaf: float) -> np.ndarray:
+    """Hash 3D voxel indices into one int64 key — far faster than np.unique(axis=0)."""
+    g = np.floor(xyz / leaf).astype(np.int64)
+    g -= g.min(axis=0)  # shift to non-negative so the hash stays well-spread
+    # large primes keep collisions negligible for room-scale grids
+    return g[:, 0] * np.int64(73856093) ^ g[:, 1] * np.int64(19349663) ^ g[:, 2] * np.int64(83492791)
+
+
 def voxel_downsample(cloud: np.ndarray, leaf: float) -> np.ndarray:
-    keys = np.floor(cloud[:, :3] / leaf).astype(np.int64)
-    _, idx = np.unique(keys, axis=0, return_index=True)
+    keys = _voxel_keys(cloud[:, :3], leaf)
+    _, idx = np.unique(keys, return_index=True)
     return cloud[np.sort(idx)]
 
 
@@ -444,15 +421,18 @@ class ICPState:
         self.refined = 0
         self._errs: list = []
         self._ratios: list = []
+        self._hist_stamps: list = []   # for correction_at(): time-ordered snapshots
+        self._hist_corr: list = []
 
     def _downsample(self, xyz: np.ndarray) -> np.ndarray:
         keys = np.floor(xyz / self.voxel).astype(np.int64)
         _, idx = np.unique(keys, axis=0, return_index=True)
         return xyz[idx]
 
-    def refine(self, xyz_lidar: np.ndarray, map_T_lidar: np.ndarray) -> np.ndarray:
+    def refine(self, xyz_lidar: np.ndarray, map_T_lidar: np.ndarray, stamp_ns: int = 0) -> np.ndarray:
         initial = self.correction @ map_T_lidar
         if self.tree is None or self.target is None or len(self.target) < 50:
+            self._record(stamp_ns)
             return initial  # map not seeded yet -> trust TF
         src = self._downsample(xyz_lidar)
         src_h = np.column_stack([src, np.ones(len(src))])
@@ -460,13 +440,32 @@ class ICPState:
         delta, err, ratio = self._icp(src_world, self.tree, self.target,
                                       self.max_dist, self.iters)
         if ratio < 0.2:
+            self._record(stamp_ns)
             return initial  # poor overlap -> don't trust ICP
         self.correction = delta @ self.correction
         self.refined += 1
         if err is not None:
             self._errs.append(err)
         self._ratios.append(ratio)
+        self._record(stamp_ns)
         return delta @ initial
+
+    def _record(self, stamp_ns: int) -> None:
+        if stamp_ns:
+            self._hist_stamps.append(stamp_ns)
+            self._hist_corr.append(self.correction.copy())
+
+    def correction_at(self, stamp_ns: int) -> np.ndarray:
+        """Nearest-in-time correction, so extra (camera) clouds get the same drift fix."""
+        if not self._hist_stamps:
+            return self.correction
+        i = bisect.bisect_left(self._hist_stamps, stamp_ns)
+        if i <= 0:
+            return self._hist_corr[0]
+        if i >= len(self._hist_stamps):
+            return self._hist_corr[-1]
+        before, after = self._hist_stamps[i - 1], self._hist_stamps[i]
+        return self._hist_corr[i - 1] if (stamp_ns - before) <= (after - stamp_ns) else self._hist_corr[i]
 
     def add_to_map(self, xyz_world: np.ndarray) -> None:
         ds = self._downsample(xyz_world)
@@ -486,22 +485,166 @@ class ICPState:
         return float(np.mean(self._ratios)) if self._ratios else 0.0
 
 
+def effective_stamp(header_ns: int, recv_ns: int) -> int:
+    """Use the message header stamp, unless it's on a different clock than the bag
+    receive time (some cameras stamp with boot/sim time, not wall-clock). A gap of
+    more than 1 s means the header epoch is wrong, so fall back to the receive time —
+    which is consistent across topics and matches the /tf wall-clock.
+    """
+    if header_ns and abs(header_ns - recv_ns) < 1_000_000_000:
+        return header_ns
+    return recv_ns
+
+
+def setup_colorizer(reader, args):
+    """Build a Colorizer from the camera_info + colour image topics, or None."""
+    if not (args.color_image or args.color_info):
+        return None
+    if not (args.color_image and args.color_info):
+        print("[color] need BOTH --color-image and --color-info; colour disabled")
+        return None
+
+    conns = {c.topic: c for c in reader.connections}
+    if args.color_info not in conns or args.color_image not in conns:
+        print(f"[color] topic not in bag (info={args.color_info}, image={args.color_image}); colour disabled")
+        return None
+
+    cz = Colorizer()
+    for _conn, _ts, raw in reader.messages(connections=[conns[args.color_info]]):
+        cz.set_camera_info(reader.deserialize(raw, conns[args.color_info].msgtype))
+        break
+    img_conn = conns[args.color_image]
+    compressed = img_conn.msgtype.endswith("CompressedImage")
+    for _conn, recv, raw in reader.messages(connections=[img_conn]):
+        m = reader.deserialize(raw, img_conn.msgtype)
+        hs = int(m.header.stamp.sec) * 1_000_000_000 + int(m.header.stamp.nanosec)
+        cz.add_image(m, compressed, effective_stamp(hs, recv))
+    if args.color_frame:
+        cz.optical_frame = args.color_frame.lstrip("/")
+    if not cz.ready():
+        print("[color] camera_info/image missing or Pillow absent; colour disabled")
+        return None
+    print(f"[color] loaded {len(cz._stamps)} images, optical frame '{cz.optical_frame}'")
+    return cz
+
+
+def accumulate_source(reader, topic, is_primary, tf_buf, args, icp, footprint, colorizer, chunks, stats):
+    """Read one cloud topic, transform to map, (self-remove / colour), append (N,6) blocks."""
+    conns = [c for c in reader.connections if c.topic == topic]
+    if not conns:
+        print(f"[scan] topic {topic} not in bag — skipped")
+        return 0
+    frame = None
+    used = 0
+    # Extra (e.g. depth) clouds are far denser per frame, so thin them harder.
+    stride = args.stride if is_primary else (args.extra_stride or max(1, args.stride * 5))
+    for i, (conn, ts, raw) in enumerate(reader.messages(connections=conns)):
+        if stride > 1 and (i % stride) != 0:
+            continue
+        msg = reader.deserialize(raw, conn.msgtype)
+        frame = (msg.header.frame_id or frame or "").lstrip("/")
+        stats["last_frame"] = frame
+        hs = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+        # Cameras here stamp with a different clock than /tf; fall back to receive time.
+        stamp_ns = effective_stamp(hs, ts)
+
+        xyz, rgb = read_cloud(msg, conn.msgtype)
+        if xyz.shape[0] == 0:
+            continue
+
+        if args.range_max > 0:
+            keep = np.linalg.norm(xyz, axis=1) <= args.range_max
+            xyz = xyz[keep]
+            rgb = rgb[keep] if rgb is not None else None
+            if xyz.shape[0] == 0:
+                continue
+
+        map_T_sensor = tf_buf.lookup(args.map_frame, frame, stamp_ns)
+        if map_T_sensor is None:
+            stats["missing_tf"] += 1
+            continue
+
+        # robot self-removal in the footprint frame
+        if footprint is not None:
+            fp_T_sensor = tf_buf.lookup(args.footprint_frame, frame, stamp_ns)
+            if fp_T_sensor is not None:
+                fp_xy = (fp_T_sensor @ np.column_stack([xyz, np.ones(len(xyz))]).T).T[:, :2]
+                inside = points_in_polygon(fp_xy, footprint)
+                if inside.any():
+                    xyz = xyz[~inside]
+                    rgb = rgb[~inside] if rgb is not None else None
+                    stats["self_removed"] += int(inside.sum())
+                    if xyz.shape[0] == 0:
+                        continue
+
+        # pose: primary lidar gets ICP; extra clouds reuse the nearest correction
+        if is_primary and icp is not None:
+            pose = icp.refine(xyz, map_T_sensor, stamp_ns)
+        elif icp is not None:
+            pose = icp.correction_at(stamp_ns) @ map_T_sensor
+        else:
+            pose = map_T_sensor
+
+        xyz_map = (pose @ np.column_stack([xyz, np.ones(len(xyz))]).T).T[:, :3]
+
+        # colour: paint uncoloured (lidar) points by projecting into the camera image
+        if rgb is None and colorizer is not None and colorizer.optical_frame:
+            cam_T_sensor = tf_buf.lookup(colorizer.optical_frame, frame, stamp_ns)
+            if cam_T_sensor is not None:
+                xyz_cam = (cam_T_sensor @ np.column_stack([xyz, np.ones(len(xyz))]).T).T[:, :3]
+                rgb = colorizer.colorize(xyz_cam, stamp_ns)
+                stats["colored"] += int(np.isfinite(rgb).all(axis=1).sum())
+        if rgb is None:
+            rgb = np.full((len(xyz), 3), np.nan)
+
+        zsel = (xyz_map[:, 2] >= args.z_min) & (xyz_map[:, 2] <= args.z_max)
+        if is_primary and icp is not None:
+            icp.add_to_map(xyz_map[zsel])
+
+        chunks.append(np.column_stack([xyz_map[zsel], rgb[zsel]]).astype(np.float32))
+        n = int(zsel.sum())
+        stats["total"] += n
+        stats["pending"] = stats.get("pending", 0) + n
+        used += 1
+        # Memory cap: when --voxel is set, periodically collapse what we've
+        # accumulated so dense streams (e.g. depth/color/points) don't OOM.
+        # Skipped with --min-hits, which needs the raw per-voxel hit counts.
+        if args.voxel > 0 and not args.min_hits and stats["pending"] > _COMPACT_EVERY:
+            compacted = voxel_downsample(np.vstack(chunks), args.voxel)
+            chunks.clear()
+            chunks.append(compacted)
+            stats["pending"] = 0
+        if args.max_points and stats["total"] >= args.max_points:
+            print(f"[scan] reached --max-points ({args.max_points}); stopping")
+            break
+    return used
+
+
+_COMPACT_EVERY = 8_000_000  # points held before an incremental voxel collapse
+
+
 def rasterise(cloud, res, origin, size, stat):
-    """Project points to a (H, W) grid. Row 0 = map origin (bottom), like Nav2."""
+    """Project points to a (H, W) height grid + (H, W, 3) colour grid.
+
+    Row 0 = map origin (bottom), like Nav2. The colour grid takes the RGB of each
+    cell's tallest point (NaN where no point or that point had no camera colour).
+    Returns (height_grid, colour_grid, zmin, zmax).
+    """
     w, h = size
     col = np.floor((cloud[:, 0] - origin[0]) / res).astype(np.int64)
     row = np.floor((cloud[:, 1] - origin[1]) / res).astype(np.int64)
     inb = (col >= 0) & (col < w) & (row >= 0) & (row < h)
     col, row, z = col[inb], row[inb], cloud[inb, 2]
+    has_color = cloud.shape[1] >= 6
+    rgb = cloud[inb, 3:6] if has_color else None
 
     grid = np.full((h, w), np.nan, dtype=np.float64)
+    cgrid = np.full((h, w, 3), np.nan, dtype=np.float64)
     if z.size == 0:
-        return grid, 0.0, 0.0
+        return grid, cgrid, 0.0, 0.0
 
     flat = row * w + col
     if stat in ("max", "min"):
-        # fmax/fmin ignore the NaN seed, so the first write fills the cell and
-        # subsequent ones keep the running extreme.
         out = grid.reshape(-1)
         (np.fmax if stat == "max" else np.fmin).at(out, flat, z)
         grid = out.reshape(h, w)
@@ -516,36 +659,56 @@ def rasterise(cloud, res, origin, size, stat):
             out[fidx] = agg(vals)
         grid = out.reshape(h, w)
 
+    if has_color:
+        # colour each cell from its tallest point: sort by (cell, z), keep last per cell.
+        order = np.lexsort((z, flat))
+        flat_s = flat[order]
+        last = np.ones(len(flat_s), dtype=bool)
+        last[:-1] = flat_s[1:] != flat_s[:-1]
+        sel = order[last]
+        cgrid.reshape(-1, 3)[flat[sel]] = rgb[sel]
+
     finite = grid[np.isfinite(grid)]
-    return grid, float(finite.min()), float(finite.max())
+    return grid, cgrid, float(finite.min()), float(finite.max())
+
+
+def _cloud_colors(cloud: np.ndarray) -> np.ndarray:
+    """Per-point RGB (0..1): camera colour where present, else height colormap."""
+    z = cloud[:, 2]
+    zn = (z - z.min()) / (np.ptp(z) + 1e-9)
+    colors = _turbo(zn)[:, :3].copy()
+    if cloud.shape[1] >= 6:
+        rgb = cloud[:, 3:6]
+        have = np.isfinite(rgb).all(axis=1)
+        colors[have] = rgb[have]
+    return colors
 
 
 def save_cloud(out_dir: Path, cloud: np.ndarray) -> None:
     xyz = cloud[:, :3]
+    colors = _cloud_colors(cloud)
+    has_rgb = cloud.shape[1] >= 6 and np.isfinite(cloud[:, 3:6]).all(axis=1).any()
+    name = "cloud_map_rgb.pcd" if has_rgb else "cloud_map.pcd"
     try:
         import open3d as o3d
 
         pc = o3d.geometry.PointCloud()
         pc.points = o3d.utility.Vector3dVector(xyz)
-        # colour by height for nicer viewing
-        z = xyz[:, 2]
-        zn = (z - z.min()) / (np.ptp(z) + 1e-9)
-        colors = _turbo(zn)
         pc.colors = o3d.utility.Vector3dVector(colors)
-        o3d.io.write_point_cloud(str(out_dir / "cloud_map.pcd"), pc)
-        print(f"[cloud] wrote {out_dir/'cloud_map.pcd'}")
+        o3d.io.write_point_cloud(str(out_dir / name), pc)
+        print(f"[cloud] wrote {out_dir/name}")
     except ImportError:
-        # plain XYZ fallback
-        np.savetxt(out_dir / "cloud_map.xyz", xyz, fmt="%.4f")
+        # plain XYZRGB fallback
+        np.savetxt(out_dir / "cloud_map.xyz", np.column_stack([xyz, colors]), fmt="%.4f")
         print(f"[cloud] open3d missing; wrote {out_dir/'cloud_map.xyz'}")
 
 
-def save_view3d_json(path: Path, grid, res, origin, zmin, zmax, frame) -> None:
-    """Export filled cells as height-coloured points (map-frame world coords) for
-    the map_ui 3D view. One point per cell center: x,y in metres, z = height.
+def save_view3d_json(path: Path, grid, cgrid, res, origin, zmin, zmax, frame) -> None:
+    """Export filled cells as coloured points (map-frame world coords) for the
+    map_ui 3D view. One point per cell center: x,y in metres, z = height.
 
+    Colour = camera colour where available, else height colormap (turbo).
     Format: {type, frame, resolution, origin, z_min, z_max, count, xyz[], rgb[]}
-    xyz are flat [x0,y0,z0,...] world coords; rgb are flat floats 0..1 (turbo).
     """
     rows, cols = np.where(np.isfinite(grid))
     if rows.size == 0:
@@ -556,7 +719,11 @@ def save_view3d_json(path: Path, grid, res, origin, zmin, zmax, frame) -> None:
     y = origin[1] + (rows + 0.5) * res
 
     zn = (z - zmin) / (zmax - zmin + 1e-9)
-    rgb = _turbo(np.clip(zn, 0, 1))[:, :3]
+    rgb = _turbo(np.clip(zn, 0, 1))[:, :3].copy()
+    if cgrid is not None:
+        cam = cgrid[rows, cols]
+        have = np.isfinite(cam).all(axis=1)
+        rgb[have] = cam[have]
 
     xyz = np.column_stack([x, y, z]).astype(np.float32).reshape(-1)
     rgb_flat = rgb.astype(np.float32).reshape(-1)
@@ -575,6 +742,29 @@ def save_view3d_json(path: Path, grid, res, origin, zmin, zmax, frame) -> None:
     print(f"[view3d] wrote {path}  ({rows.size} points)")
 
 
+def save_cloud_view3d(path: Path, cloud: np.ndarray, max_pts: int, frame: str) -> None:
+    """Export the full 3D coloured cloud (down to max_pts) for the map_ui 3D view.
+    Unlike the 2.5D grid, this keeps every height — the real volumetric cloud."""
+    xyz = cloud[:, :3].astype(np.float64)
+    colors = _cloud_colors(cloud)
+    n = len(xyz)
+    if n > max_pts:
+        sel = np.random.default_rng(0).choice(n, max_pts, replace=False)
+        xyz, colors = xyz[sel], colors[sel]
+    z = xyz[:, 2]
+    payload = {
+        "type": "height_map_view3d",
+        "frame": frame,
+        "count": int(len(xyz)),
+        "z_min": float(z.min()) if len(z) else 0.0,
+        "z_max": float(z.max()) if len(z) else 0.0,
+        "xyz": [round(float(v), 4) for v in xyz.reshape(-1)],
+        "rgb": [round(float(v), 3) for v in colors.reshape(-1)],
+    }
+    path.write_text(json.dumps(payload))
+    print(f"[view3d] wrote {path}  ({len(xyz)} points, full 3D)")
+
+
 def save_geotiff_like(path: Path, grid: np.ndarray) -> None:
     try:
         from PIL import Image
@@ -584,7 +774,7 @@ def save_geotiff_like(path: Path, grid: np.ndarray) -> None:
         print(f"[tif]  skipped ({e})")
 
 
-def save_color_png(path: Path, grid: np.ndarray) -> None:
+def save_color_png(path: Path, grid: np.ndarray, cgrid=None) -> None:
     from PIL import Image
 
     finite = np.isfinite(grid)
@@ -592,8 +782,11 @@ def save_color_png(path: Path, grid: np.ndarray) -> None:
     if finite.any():
         z = grid[finite]
         zn = (grid - z.min()) / (np.ptp(z) + 1e-9)
-        rgb = (_turbo(np.clip(zn, 0, 1)) * 255).astype(np.uint8)
-        img[..., :3] = rgb
+        rgb = _turbo(np.clip(zn, 0, 1))[..., :3].copy()
+        if cgrid is not None:
+            have = np.isfinite(cgrid).all(axis=2)
+            rgb[have] = cgrid[have]
+        img[..., :3] = (rgb * 255).astype(np.uint8)
         img[..., 3] = np.where(finite, 255, 0)
     # flip vertically so the PNG matches how Nav2 displays the map (origin bottom-left)
     Image.fromarray(img[::-1], mode="RGBA").save(path)

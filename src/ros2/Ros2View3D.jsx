@@ -12,10 +12,13 @@ const S = {
   canvas: { width: "100%", height: "100%", display: "block" },
   hud: {
     position: "absolute",
-    top: 10,
-    left: 10,
+    top: 8,
+    left: 8,
+    right: 8,
     display: "flex",
-    gap: 6,
+    flexWrap: "wrap",
+    gap: 5,
+    rowGap: 4,
     alignItems: "center",
     fontSize: 10,
     color: "#8eb8c8",
@@ -31,6 +34,8 @@ const S = {
     fontSize: 10,
     padding: "2px 7px",
     cursor: "pointer",
+    whiteSpace: "nowrap",
+    flexShrink: 0,
   }),
   info: {
     position: "absolute",
@@ -196,6 +201,55 @@ function perspective(fovy, aspect, near, far) {
   ]);
 }
 
+// RANSAC plane fit on Nx3 points → {nx,ny,nz,d,cnt} (largest inlier set) or null.
+function ransacPlane(pts, iters = 160, thr = 0.03) {
+  const N = pts.length;
+  if (N < 3) return null;
+  let best = null;
+  for (let it = 0; it < iters; it++) {
+    const a = pts[(Math.random() * N) | 0], b = pts[(Math.random() * N) | 0], c = pts[(Math.random() * N) | 0];
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+    const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const nl = Math.hypot(nx, ny, nz);
+    if (nl < 1e-6) continue;
+    nx /= nl; ny /= nl; nz /= nl;
+    const d = -(nx * a[0] + ny * a[1] + nz * a[2]);
+    let cnt = 0;
+    for (let i = 0; i < N; i++) {
+      const p = pts[i];
+      if (Math.abs(nx * p[0] + ny * p[1] + nz * p[2] + d) < thr) cnt++;
+    }
+    if (!best || cnt > best.cnt) best = { nx, ny, nz, d, cnt };
+  }
+  return best;
+}
+
+function invert4(m) {
+  const inv = new Float32Array(16);
+  inv[0] = m[5]*m[10]*m[15]-m[5]*m[11]*m[14]-m[9]*m[6]*m[15]+m[9]*m[7]*m[14]+m[13]*m[6]*m[11]-m[13]*m[7]*m[10];
+  inv[4] = -m[4]*m[10]*m[15]+m[4]*m[11]*m[14]+m[8]*m[6]*m[15]-m[8]*m[7]*m[14]-m[12]*m[6]*m[11]+m[12]*m[7]*m[10];
+  inv[8] = m[4]*m[9]*m[15]-m[4]*m[11]*m[13]-m[8]*m[5]*m[15]+m[8]*m[7]*m[13]+m[12]*m[5]*m[11]-m[12]*m[7]*m[9];
+  inv[12] = -m[4]*m[9]*m[14]+m[4]*m[10]*m[13]+m[8]*m[5]*m[14]-m[8]*m[6]*m[13]-m[12]*m[5]*m[10]+m[12]*m[6]*m[9];
+  inv[1] = -m[1]*m[10]*m[15]+m[1]*m[11]*m[14]+m[9]*m[2]*m[15]-m[9]*m[3]*m[14]-m[13]*m[2]*m[11]+m[13]*m[3]*m[10];
+  inv[5] = m[0]*m[10]*m[15]-m[0]*m[11]*m[14]-m[8]*m[2]*m[15]+m[8]*m[3]*m[14]+m[12]*m[2]*m[11]-m[12]*m[3]*m[10];
+  inv[9] = -m[0]*m[9]*m[15]+m[0]*m[11]*m[13]+m[8]*m[1]*m[15]-m[8]*m[3]*m[13]-m[12]*m[1]*m[11]+m[12]*m[3]*m[9];
+  inv[13] = m[0]*m[9]*m[14]-m[0]*m[10]*m[13]-m[8]*m[1]*m[14]+m[8]*m[2]*m[13]+m[12]*m[1]*m[10]-m[12]*m[2]*m[9];
+  inv[2] = m[1]*m[6]*m[15]-m[1]*m[7]*m[14]-m[5]*m[2]*m[15]+m[5]*m[3]*m[14]+m[13]*m[2]*m[7]-m[13]*m[3]*m[6];
+  inv[6] = -m[0]*m[6]*m[15]+m[0]*m[7]*m[14]+m[4]*m[2]*m[15]-m[4]*m[3]*m[14]-m[12]*m[2]*m[7]+m[12]*m[3]*m[6];
+  inv[10] = m[0]*m[5]*m[15]-m[0]*m[7]*m[13]-m[4]*m[1]*m[15]+m[4]*m[3]*m[13]+m[12]*m[1]*m[7]-m[12]*m[3]*m[5];
+  inv[14] = -m[0]*m[5]*m[14]+m[0]*m[6]*m[13]+m[4]*m[1]*m[14]-m[4]*m[2]*m[13]-m[12]*m[1]*m[6]+m[12]*m[2]*m[5];
+  inv[3] = -m[1]*m[6]*m[11]+m[1]*m[7]*m[10]+m[5]*m[2]*m[11]-m[5]*m[3]*m[10]-m[9]*m[2]*m[7]+m[9]*m[3]*m[6];
+  inv[7] = m[0]*m[6]*m[11]-m[0]*m[7]*m[10]-m[4]*m[2]*m[11]+m[4]*m[3]*m[10]+m[8]*m[2]*m[7]-m[8]*m[3]*m[6];
+  inv[11] = -m[0]*m[5]*m[11]+m[0]*m[7]*m[9]+m[4]*m[1]*m[11]-m[4]*m[3]*m[9]-m[8]*m[1]*m[7]+m[8]*m[3]*m[5];
+  inv[15] = m[0]*m[5]*m[10]-m[0]*m[6]*m[9]-m[4]*m[1]*m[10]+m[4]*m[2]*m[9]+m[8]*m[1]*m[6]-m[8]*m[2]*m[5];
+  let det = m[0]*inv[0] + m[1]*inv[4] + m[2]*inv[8] + m[3]*inv[12];
+  if (!det) return null;
+  det = 1.0 / det;
+  for (let i = 0; i < 16; i++) inv[i] *= det;
+  return inv;
+}
+
 function multiply4(a, b) {
   const out = new Float32Array(16);
   for (let i = 0; i < 4; i++) {
@@ -321,6 +375,80 @@ function parseHeightMap(json) {
   return { pos, col, count, version: Date.now() };
 }
 
+function BuildPanel({ params, setParams, onPickBag, building, onClose, onBuild }) {
+  const set = (k, v) => setParams(p => ({ ...p, [k]: v }));
+  const num = (k, v) => set(k, v === "" ? "" : Number(v));
+  const row = { display: "flex", alignItems: "center", gap: 6, marginBottom: 6 };
+  const lab = { width: 64, color: "#8eb8c8", fontSize: 10, flexShrink: 0 };
+  const inp = {
+    flex: 1, minWidth: 0, background: "rgba(0,0,0,0.4)", color: "#cfeefb",
+    border: "1px solid rgba(0,212,255,0.25)", borderRadius: 4, fontSize: 10, padding: "3px 6px",
+  };
+  const numStyle = { ...inp, flex: "none", width: 64 };
+  return (
+    <div style={{
+      position: "absolute", top: 40, left: 10, width: 300, zIndex: 20,
+      background: "rgba(6,14,28,0.96)", border: "1px solid rgba(0,212,255,0.3)",
+      borderRadius: 6, padding: 10, fontFamily: "'JetBrains Mono','Fira Code',monospace",
+      boxShadow: "0 6px 24px rgba(0,0,0,0.5)",
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <span style={{ color: "#00d4ff", fontWeight: "bold", fontSize: 11 }}>🛠 Bag → 3D</span>
+        <button style={S.btn(false)} onClick={onClose}>✕</button>
+      </div>
+
+      <div style={row}>
+        <span style={lab}>bag</span>
+        <input style={inp} value={params.bag} placeholder="rosbag 폴더"
+          onChange={e => set("bag", e.target.value)} />
+        {onPickBag && <button style={S.btn(false)} onClick={async () => { const p = await onPickBag(); if (p) set("bag", p); }}>…</button>}
+      </div>
+      <div style={row}>
+        <span style={lab}>map.yaml</span>
+        <input style={inp} value={params.map} placeholder="(선택) 2D 맵 yaml"
+          onChange={e => set("map", e.target.value)} />
+      </div>
+
+      <div style={row}>
+        <span style={lab}>voxel</span>
+        <input type="number" step="0.005" style={numStyle} value={params.voxel} onChange={e => num("voxel", e.target.value)} />
+        <span style={lab}>stride</span>
+        <input type="number" step="1" min="1" style={numStyle} value={params.stride} onChange={e => num("stride", e.target.value)} />
+      </div>
+      <div style={row}>
+        <span style={lab}>z 범위</span>
+        <input type="number" step="0.1" style={numStyle} value={params.zMin} onChange={e => num("zMin", e.target.value)} />
+        <input type="number" step="0.1" style={numStyle} value={params.zMax} onChange={e => num("zMax", e.target.value)} />
+        <span style={lab}>range</span>
+        <input type="number" step="1" style={numStyle} value={params.rangeMax} onChange={e => num("rangeMax", e.target.value)} />
+      </div>
+      <div style={row}>
+        <span style={lab}>점 수</span>
+        <input type="number" step="50000" style={numStyle} value={params.points} onChange={e => num("points", e.target.value)} />
+        <label style={{ ...lab, width: "auto", display: "flex", gap: 3, alignItems: "center", cursor: "pointer" }}>
+          <input type="checkbox" checked={params.icp} onChange={e => set("icp", e.target.checked)} /> ICP
+        </label>
+        <label style={{ ...lab, width: "auto", display: "flex", gap: 3, alignItems: "center", cursor: "pointer" }}>
+          <input type="checkbox" checked={params.footprint} onChange={e => set("footprint", e.target.checked)} /> 자기제거
+        </label>
+      </div>
+      <div style={row}>
+        <span style={lab}>extra</span>
+        <input style={inp} value={params.extra} placeholder="추가 플래그 (예: --color-image …)"
+          onChange={e => set("extra", e.target.value)} />
+      </div>
+
+      <button
+        style={{ ...S.btn(true), width: "100%", justifyContent: "center", padding: "5px", marginTop: 4, opacity: (building || !params.bag) ? 0.5 : 1 }}
+        disabled={building || !params.bag}
+        onClick={onBuild}
+      >
+        {building ? "빌드 중…" : "▶ 빌드 & 로드"}
+      </button>
+    </div>
+  );
+}
+
 export default function Ros2View3D({
   mapCanvasRef,
   meta,
@@ -331,6 +459,18 @@ export default function Ros2View3D({
   fixedFrame,
   viewMode = "free",
   onChangeViewMode,
+  externalCloud,
+  onBuildFromBag,
+  onCancelBuild,
+  onPickBag,
+  onKeepoutFromPolygon,
+  onSemanticFromPolygon,
+  zPickActive = false,
+  onPickHeight,
+  onPickHeightRange,
+  defaultBag = "",
+  defaultMap = "",
+  building = false,
 }) {
   const glCanvasRef = useRef(null);
   const glRef = useRef(null);
@@ -349,6 +489,7 @@ export default function Ros2View3D({
   const fileInputRef = useRef(null);
   const mvpRef = useRef(null);            // latest MVP, for screen-space point picking
   const editModeRef = useRef(false);
+  const zPickRef = useRef(false);
   const undoRef = useRef([]);             // stack of previous {pos,col,count}
   const ptSizeRef = useRef(3.5);
   const [heightInfo, setHeightInfo] = useState(null);
@@ -360,11 +501,30 @@ export default function Ros2View3D({
   const [polygon, setPolygon] = useState([]);   // CSS-px vertices for the lasso
   const [cursor, setCursor] = useState(null);    // live cursor for the rubber-band edge
   const [editMsg, setEditMsg] = useState(null);  // transient "removed N" feedback
+  const [paintColor, setPaintColor] = useState("#ff2a2a");  // colour for painting selected points
+  const [polyClosed, setPolyClosed] = useState(false);      // right-click finalised the polygon
+  const [semType, setSemType] = useState("carrier");        // semantic layer the lasso sends to
+  const [showBuildPanel, setShowBuildPanel] = useState(false);
+  const [buildParams, setBuildParams] = useState({
+    bag: "", map: "", voxel: 0.02, stride: 2, rangeMax: 20, zMin: 0, zMax: 2.5,
+    icp: true, footprint: true, points: 300000, extra: "",
+  });
 
   useEffect(() => { showHeightRef.current = showHeight; }, [showHeight]);
   useEffect(() => { zScaleRef.current = zScale; }, [zScale]);
   useEffect(() => { ptSizeRef.current = ptSize; }, [ptSize]);
   useEffect(() => { editModeRef.current = editMode; }, [editMode]);
+  useEffect(() => { zPickRef.current = zPickActive; }, [zPickActive]);
+  useEffect(() => {
+    if (!editMode) return;
+    const onKey = (e) => {
+      if (["INPUT", "TEXTAREA"].includes(e.target.tagName)) return;
+      if (e.key === "Backspace") { e.preventDefault(); setPolygon(p => p.slice(0, -1)); setPolyClosed(false); }
+      else if (e.key === "Escape") { setPolygon([]); setCursor(null); setPolyClosed(false); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editMode]);
 
   const loadHeightFile = (file) => {
     if (!file) return;
@@ -392,6 +552,25 @@ export default function Ros2View3D({
     };
     reader.readAsText(file);
   };
+
+  // Load a cloud built from a bag (cloud_view3d.json / height_view3d.json) programmatically.
+  useEffect(() => {
+    const json = externalCloud?.data;
+    if (!json) return;
+    const data = parseHeightMap(json);
+    if (!data) { setHeightInfo("로드 실패: 빈 데이터"); return; }
+    heightMapRef.current = data;
+    heightMetaRef.current = {
+      type: json.type || "height_map_view3d",
+      frame: json.frame || "map",
+      resolution: json.resolution,
+      origin: json.origin,
+      z_min: json.z_min,
+      z_max: json.z_max,
+    };
+    undoRef.current = [];
+    setHeightInfo(`${data.count.toLocaleString()} pts`);
+  }, [externalCloud?.key]);
 
   // ---- CloudCompare-style polygon segmentation -------------------------------
   const pointInPoly = (px, py, poly) => {
@@ -442,6 +621,121 @@ export default function Ros2View3D({
     setEditMsg(`−${(hm.count - keep.length).toLocaleString()} (남음 ${keep.length.toLocaleString()})`);
     setPolygon([]);
     setCursor(null);
+    setPolyClosed(false);
+  };
+
+  // Recolour the points inside (or outside) the polygon — "paint" the lidar region.
+  const applyPaint = (inside) => {
+    const hm = heightMapRef.current;
+    const mvp = mvpRef.current;
+    const canvas = glCanvasRef.current;
+    if (!hm || !mvp || !canvas || polygon.length < 3) return;
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+    const zs = zScaleRef.current;
+    const h = paintColor.replace("#", "");
+    const n = parseInt(h, 16);
+    const r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+
+    const col = new Float32Array(hm.col);   // copy so undo keeps the original
+    let painted = 0;
+    for (let i = 0; i < hm.count; i++) {
+      const x = hm.pos[i * 3], y = hm.pos[i * 3 + 1], z = hm.pos[i * 3 + 2] * zs;
+      const cw = mvp[3] * x + mvp[7] * y + mvp[11] * z + mvp[15];
+      let sel = false;
+      if (cw > 1e-6) {
+        const cx = mvp[0] * x + mvp[4] * y + mvp[8] * z + mvp[12];
+        const cy = mvp[1] * x + mvp[5] * y + mvp[9] * z + mvp[13];
+        const sx = (cx / cw * 0.5 + 0.5) * W;
+        const sy = (1 - (cy / cw * 0.5 + 0.5)) * H;
+        sel = pointInPoly(sx, sy, polygon);
+      }
+      if (inside ? sel : !sel) { col[i * 3] = r; col[i * 3 + 1] = g; col[i * 3 + 2] = b; painted++; }
+    }
+    undoRef.current.push({ pos: hm.pos, col: hm.col, count: hm.count });
+    if (undoRef.current.length > 30) undoRef.current.shift();
+    heightMapRef.current = { pos: hm.pos, col, count: hm.count, version: Date.now() };
+    setEditMsg(`🎨 ${painted.toLocaleString()}점 색칠`);
+    setPolygon([]);
+    setCursor(null);
+    setPolyClosed(false);
+  };
+
+  // Unproject a screen point onto the ground plane (z=0) → world (map) x,y.
+  const groundFromScreen = (sx, sy) => {
+    const mvp = mvpRef.current, canvas = glCanvasRef.current;
+    if (!mvp || !canvas) return null;
+    const inv = invert4(mvp);
+    if (!inv) return null;
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+    const ndcx = (sx / W) * 2 - 1, ndcy = 1 - (sy / H) * 2;
+    const unp = (ndcz) => {
+      const x = inv[0] * ndcx + inv[4] * ndcy + inv[8] * ndcz + inv[12];
+      const y = inv[1] * ndcx + inv[5] * ndcy + inv[9] * ndcz + inv[13];
+      const z = inv[2] * ndcx + inv[6] * ndcy + inv[10] * ndcz + inv[14];
+      const w = inv[3] * ndcx + inv[7] * ndcy + inv[11] * ndcz + inv[15];
+      if (Math.abs(w) < 1e-9) return null;
+      return { x: x / w, y: y / w, z: z / w };
+    };
+    const a = unp(-1), b = unp(1);
+    if (!a || !b) return null;
+    const dz = b.z - a.z;
+    if (Math.abs(dz) < 1e-9) return null;
+    const t = -a.z / dz;                        // intersect ground plane z=0
+    return { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y) };
+  };
+
+  // Send the lasso (projected to the ground) to the 2D map as a keepout zone.
+  const sendKeepout = () => {
+    if (!onKeepoutFromPolygon || polygon.length < 3) return;
+    const world = polygon.map(p => groundFromScreen(p.x, p.y)).filter(Boolean);
+    if (world.length < 3) { setEditMsg("진입금지 변환 실패 (Top뷰 권장)"); return; }
+    onKeepoutFromPolygon(world);
+    setEditMsg(`⛔ 진입금지로 전송 (${world.length}각형)`);
+    setPolygon([]);
+    setCursor(null);
+    setPolyClosed(false);
+  };
+
+  // Extract the carrier face from the lassoed lidar points: RANSAC plane fit (robust to
+  // floor/stray points), then take the z band from the plane INLIERS.
+  const sendHeightRange = () => {
+    const hm = heightMapRef.current, mvp = mvpRef.current, canvas = glCanvasRef.current;
+    if (!onPickHeightRange || polygon.length < 3 || !hm || !mvp || !canvas) return;
+    const W = canvas.clientWidth, H = canvas.clientHeight, zs = zScaleRef.current;
+    const pts = [];                                  // world (x,y,z) of lassoed points
+    for (let i = 0; i < hm.count; i++) {
+      const x = hm.pos[i * 3], y = hm.pos[i * 3 + 1], z = hm.pos[i * 3 + 2] * zs;
+      const cw = mvp[3] * x + mvp[7] * y + mvp[11] * z + mvp[15];
+      if (cw <= 1e-6) continue;
+      const sx = (mvp[0] * x + mvp[4] * y + mvp[8] * z + mvp[12]) / cw * 0.5 + 0.5;
+      const sy = 1 - ((mvp[1] * x + mvp[5] * y + mvp[9] * z + mvp[13]) / cw * 0.5 + 0.5);
+      if (pointInPoly(sx * W, sy * H, polygon)) pts.push([x, y, hm.pos[i * 3 + 2]]);
+    }
+    if (pts.length < 3) { setEditMsg("영역 안에 점이 부족"); return; }
+    const pl = ransacPlane(pts, 160, 0.03);
+    const thr = 0.03;
+    let mn = Infinity, mx = -Infinity, n = 0;
+    for (const p of pts) {
+      const onPlane = pl ? Math.abs(pl.nx * p[0] + pl.ny * p[1] + pl.nz * p[2] + pl.d) < thr : true;
+      if (onPlane) { if (p[2] < mn) mn = p[2]; if (p[2] > mx) mx = p[2]; n++; }
+    }
+    if (!n) { mn = Math.min(...pts.map(p => p[2])); mx = Math.max(...pts.map(p => p[2])); n = pts.length; }
+    const tilt = pl ? Math.abs(pl.nz) : 0;           // ~1 horizontal plane(top), ~0 vertical(front)
+    onPickHeightRange(mn, mx, n);
+    setEditMsg(`📐 면추출 z ${mn.toFixed(2)}~${mx.toFixed(2)} m (${n}점, ${tilt > 0.7 ? "윗면" : "앞면"})`);
+    setPolygon([]); setCursor(null); setPolyClosed(false);
+  };
+
+  // Send the lasso (projected to the ground) to the 2D map as a carrier/room/object.
+  const sendSemantic = () => {
+    if (!onSemanticFromPolygon || polygon.length < 3) return;
+    const world = polygon.map(p => groundFromScreen(p.x, p.y)).filter(Boolean);
+    if (world.length < 3) { setEditMsg("시맨틱 변환 실패 (Top뷰 권장)"); return; }
+    onSemanticFromPolygon(world, semType);
+    setEditMsg(`📦 ${semType}로 전송 (${world.length}각형)`);
+    setPolygon([]);
+    setCursor(null);
+    setPolyClosed(false);
   };
 
   const deleteByZ = (above, zVal) => {
@@ -757,15 +1051,48 @@ export default function Ros2View3D({
 
   const onMouseDown = (e) => {
     e.preventDefault();
-    // Edit mode: left-click drops a lasso vertex; other buttons still drive the camera.
+    // Height pick: click the nearest lidar point → report its world z.
+    if (zPickRef.current && e.button === 0) {
+      const hm = heightMapRef.current, mvp = mvpRef.current, canvas = glCanvasRef.current;
+      if (hm && mvp && canvas) {
+        const W = canvas.clientWidth, H = canvas.clientHeight, zs = zScaleRef.current;
+        const { x: mx, y: my } = localXY(e);
+        let bi = -1, bd = 14 * 14;
+        for (let i = 0; i < hm.count; i++) {
+          const x = hm.pos[i * 3], y = hm.pos[i * 3 + 1], z = hm.pos[i * 3 + 2] * zs;
+          const cw = mvp[3] * x + mvp[7] * y + mvp[11] * z + mvp[15];
+          if (cw <= 1e-6) continue;
+          const sx = (mvp[0] * x + mvp[4] * y + mvp[8] * z + mvp[12]) / cw * 0.5 + 0.5;
+          const sy = 1 - ((mvp[1] * x + mvp[5] * y + mvp[9] * z + mvp[13]) / cw * 0.5 + 0.5);
+          const dx = sx * W - mx, dy = sy * H - my, dd = dx * dx + dy * dy;
+          if (dd < bd) { bd = dd; bi = i; }
+        }
+        if (bi >= 0) { onPickHeight?.(hm.pos[bi * 3 + 2]); setEditMsg(`📏 z=${hm.pos[bi * 3 + 2].toFixed(2)} m`); }
+      }
+      return;
+    }
+    // Edit mode: left-click drops a lasso vertex; right-click (no drag) finishes it.
     if (editModeRef.current && e.button === 0) {
-      setPolygon(p => [...p, localXY(e)]);
+      const pt = localXY(e);
+      if (polyClosed) { setPolygon([pt]); setPolyClosed(false); return; }  // start a new polygon
+      setPolygon(p => {
+        if (p.length) {
+          const last = p[p.length - 1];
+          if (Math.hypot(pt.x - last.x, pt.y - last.y) < 4) return p; // dedupe (double-click)
+        }
+        if (p.length >= 3) {
+          const d = Math.hypot(pt.x - p[0].x, pt.y - p[0].y);
+          if (d < 10) { setPolyClosed(true); return p; } // near first vertex → close
+        }
+        return [...p, pt];
+      });
       return;
     }
     dragRef.current = {
       btn: e.button,
       x: e.clientX,
       y: e.clientY,
+      moved: false,
       yaw: cameraRef.current.yaw,
       pitch: cameraRef.current.pitch,
       tx: cameraRef.current.target.x,
@@ -779,6 +1106,7 @@ export default function Ros2View3D({
     if (!d) return;
     const dx = e.clientX - d.x;
     const dy = e.clientY - d.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true;
     const cam = cameraRef.current;
 
     if (viewMode === "free" && d.btn === 0) {
@@ -791,7 +1119,15 @@ export default function Ros2View3D({
     }
   };
 
-  const onMouseUp = () => { dragRef.current = null; };
+  const onMouseUp = () => {
+    const d = dragRef.current;
+    dragRef.current = null;
+    // Right-click without dragging = finish the polygon selection.
+    if (d && d.btn === 2 && !d.moved && editModeRef.current && polygon.length >= 3) {
+      setPolyClosed(true);
+      setCursor(null);
+    }
+  };
 
   const onWheel = (e) => {
     e.preventDefault();
@@ -804,7 +1140,7 @@ export default function Ros2View3D({
     <div style={S.wrap}>
       <canvas
         ref={glCanvasRef}
-        style={{ ...S.canvas, cursor: editMode ? "crosshair" : "default" }}
+        style={{ ...S.canvas, cursor: (editMode || zPickActive) ? "crosshair" : "default" }}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
@@ -815,13 +1151,18 @@ export default function Ros2View3D({
       {editMode && polygon.length > 0 && (
         <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
           <polyline
-            points={[...polygon, ...(cursor ? [cursor] : []), polygon[0]]
+            points={[...polygon, ...(polyClosed || !cursor ? [] : [cursor]), polygon[0]]
               .map(p => `${p.x},${p.y}`).join(" ")}
-            fill="rgba(0,212,255,0.12)" stroke="#00d4ff" strokeWidth="1.5" strokeDasharray="5 4"
+            fill={polyClosed ? "rgba(0,255,136,0.18)" : "rgba(0,212,255,0.12)"}
+            stroke={polyClosed ? "#00ff88" : "#00d4ff"} strokeWidth="1.5"
+            strokeDasharray={polyClosed ? "0" : "5 4"}
           />
           {polygon.map((p, i) => (
-            <circle key={i} cx={p.x} cy={p.y} r="3" fill="#00d4ff" />
+            <circle key={i} cx={p.x} cy={p.y} r={i === 0 ? 4 : 3} fill={i === 0 ? "#00ff88" : "#00d4ff"} />
           ))}
+          {!polyClosed && polygon.length >= 3 && cursor && Math.hypot(cursor.x - polygon[0].x, cursor.y - polygon[0].y) < 10 && (
+            <circle cx={polygon[0].x} cy={polygon[0].y} r="9" fill="none" stroke="#00ff88" strokeWidth="1.5" />
+          )}
         </svg>
       )}
       <div style={S.hud}>
@@ -829,7 +1170,20 @@ export default function Ros2View3D({
         <button style={S.btn(viewMode === "free")} onClick={() => onChangeViewMode?.("free")}>Free</button>
         <button style={S.btn(viewMode === "top")} onClick={() => onChangeViewMode?.("top")}>Top</button>
         <span style={{ opacity: 0.4 }}>|</span>
-        <button style={S.btn(false)} onClick={() => fileInputRef.current?.click()} title="height_view3d.json 로드">Height ⬆</button>
+        {onBuildFromBag && (
+          <button
+            style={S.btn(building || showBuildPanel)}
+            onClick={() => {
+              if (building) { onCancelBuild?.(); return; }
+              setBuildParams(p => ({ ...p, bag: p.bag || defaultBag, map: p.map || defaultMap }));
+              setShowBuildPanel(v => !v);
+            }}
+            title={building ? "빌드 취소" : "rosbag에서 3D 포인트 생성"}
+          >
+            {building ? "⏳ 빌드중… ✕취소" : "🛠 Bag→3D"}
+          </button>
+        )}
+        <button style={S.btn(false)} onClick={() => fileInputRef.current?.click()} title="height_view3d.json / cloud_view3d.json 로드">Height ⬆</button>
         {heightInfo && (
           <button style={S.btn(showHeight)} onClick={() => setShowHeight(v => !v)} title="높이맵 표시/숨김">
             {showHeight ? "◉" : "○"} {heightInfo}
@@ -872,7 +1226,7 @@ export default function Ros2View3D({
             <span style={{ opacity: 0.4 }}>|</span>
             <button
               style={S.btn(editMode)}
-              onClick={() => { setEditMode(v => !v); setPolygon([]); setCursor(null); }}
+              onClick={() => { setEditMode(v => !v); setPolygon([]); setCursor(null); setPolyClosed(false); }}
               title="포인트 세그먼트 편집 (좌클릭으로 폴리곤, 우드래그로 회전)"
             >
               ✂ Edit
@@ -885,10 +1239,38 @@ export default function Ros2View3D({
               onClick={() => applyDelete(true)} title="폴리곤 안쪽 점 삭제">안쪽 삭제</button>
             <button style={S.btn(false)} disabled={polygon.length < 3}
               onClick={() => applyDelete(false)} title="폴리곤 바깥쪽 점 삭제">바깥 삭제</button>
+            <span style={{ opacity: 0.4 }}>|</span>
+            <input type="color" value={paintColor} onChange={e => setPaintColor(e.target.value)}
+              title="색칠 색상" style={{ width: 22, height: 18, padding: 0, border: "1px solid rgba(0,212,255,0.3)", background: "transparent", cursor: "pointer" }} />
+            <button style={S.btn(false)} disabled={polygon.length < 3}
+              onClick={() => applyPaint(true)} title="폴리곤 안쪽 점을 색칠">🎨 안쪽칠</button>
+            <button style={S.btn(false)} disabled={polygon.length < 3}
+              onClick={() => applyPaint(false)} title="폴리곤 바깥쪽 점을 색칠">🎨 바깥칠</button>
+            {onPickHeightRange && (
+              <button style={S.btn(false)} disabled={polygon.length < 3}
+                onClick={sendHeightRange} title="폴리곤 안 라이다 점들의 z 최소~최대를 선택 캐리어 높이로">📐 z범위</button>
+            )}
+            {onKeepoutFromPolygon && (
+              <button style={S.btn(false)} disabled={polygon.length < 3}
+                onClick={sendKeepout} title="폴리곤을 바닥(z=0)에 투영해 맵의 진입금지 영역으로 보냄 (Top뷰 권장)">⛔ 진입금지로</button>
+            )}
+            {onSemanticFromPolygon && (
+              <>
+                <select value={semType} onChange={e => setSemType(e.target.value)} title="시맨틱 종류"
+                  style={{ background: "rgba(0,0,0,0.4)", color: "#9fe", border: "1px solid rgba(0,212,255,0.3)", borderRadius: 3, fontSize: 10, height: 20 }}>
+                  <option value="carrier">캐리어</option>
+                  <option value="room">방</option>
+                  <option value="object">객체</option>
+                </select>
+                <button style={S.btn(false)} disabled={polygon.length < 3}
+                  onClick={sendSemantic} title="폴리곤을 바닥에 투영해 시맨틱 영역으로 보냄 (이름 입력 창이 뜸)">📦 시맨틱으로</button>
+              </>
+            )}
+            <span style={{ opacity: 0.4 }}>|</span>
             <button style={S.btn(false)} disabled={!polygon.length}
-              onClick={() => { setPolygon(p => p.slice(0, -1)); }} title="마지막 점 취소">⮌ 점</button>
+              onClick={() => { setPolygon(p => p.slice(0, -1)); setPolyClosed(false); }} title="마지막 점 취소 (Backspace)">⮌ 점</button>
             <button style={S.btn(false)} disabled={!polygon.length}
-              onClick={() => { setPolygon([]); setCursor(null); }} title="폴리곤 비우기">✕</button>
+              onClick={() => { setPolygon([]); setCursor(null); setPolyClosed(false); }} title="폴리곤 비우기 (Esc)">✕</button>
           </>
         )}
         {heightInfo && showHeight && (
@@ -905,6 +1287,16 @@ export default function Ros2View3D({
         style={{ display: "none" }}
         onChange={e => { loadHeightFile(e.target.files?.[0]); e.target.value = ""; }}
       />
+      {showBuildPanel && onBuildFromBag && (
+        <BuildPanel
+          params={buildParams}
+          setParams={setBuildParams}
+          onPickBag={onPickBag}
+          building={building}
+          onClose={() => setShowBuildPanel(false)}
+          onBuild={() => { setShowBuildPanel(false); onBuildFromBag(buildParams); }}
+        />
+      )}
       <div style={S.info}>
         <div>Frame: {fixedFrame || "map"}</div>
         <div>Pts: {lidarWorldPoints?.current?.length || 0}</div>

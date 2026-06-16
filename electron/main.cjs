@@ -824,6 +824,132 @@ ipcMain.handle("rosbag:info", async (event, bagPath) => {
   return readBagInfo(bagPath);
 });
 
+// Build a 3D point cloud / height map from a rosbag via 3d_map/build_height_map.py
+const DEFAULT_HEIGHTMAP_ARGS =
+  "--z-min 0.0 --z-max 2.5 --range-max 20 --voxel 0.02 --stride 2 --icp --view3d-cloud 300000";
+
+function buildHeightMapCommand(options = {}) {
+  const scriptDir = options.scriptDir || path.join(__dirname, "..", "3d_map");
+  const python = options.python || "python3";
+  const bag = String(options.bag || "").trim();
+  if (!bag) throw new Error("bag path is required");
+  const out = String(options.out || "out_ui").trim();
+  const parts = [shellQuote(python), "build_height_map.py", "--bag", shellQuote(bag)];
+  if (options.map) parts.push("--map", shellQuote(String(options.map)));
+  if (options.urdf) parts.push("--urdf", shellQuote(String(options.urdf)));
+  if (options.footprint) {
+    parts.push("--footprint", shellQuote(String(options.footprint)));
+    if (options.footprintFrame) parts.push("--footprint-frame", shellQuote(String(options.footprintFrame)));
+  }
+  // Extra flags are user-controlled CLI args (passed through verbatim).
+  const extra = options.args != null ? String(options.args) : DEFAULT_HEIGHTMAP_ARGS;
+  if (extra.trim()) parts.push(extra.trim());
+  parts.push("--out", shellQuote(out));
+  return { scriptDir, command: parts.join(" "), out };
+}
+
+let heightmapProcess = null;
+
+function runHeightmapBuild(command, cwd) {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    // detached so we can SIGTERM the whole process group (bash + python) on cancel.
+    const child = spawn("bash", ["-lc", command], {
+      cwd, env: { ...process.env }, detached: true, stdio: ["ignore", "pipe", "pipe"],
+    });
+    heightmapProcess = child;
+    child.stdout.on("data", d => { stdout += d.toString(); });
+    child.stderr.on("data", d => { stderr += d.toString(); });
+    child.on("error", e => { if (heightmapProcess === child) heightmapProcess = null; reject(e); });
+    child.on("close", (code, signal) => {
+      if (heightmapProcess === child) heightmapProcess = null;
+      if (code === 0) { resolve({ code, signal, stdout, stderr }); return; }
+      if (signal) { reject(Object.assign(new Error("빌드 취소됨"), { cancelled: true, signal })); return; }
+      const tail = (stderr || stdout).trim().split(/\r?\n/).slice(-3).join("\n");
+      reject(Object.assign(new Error(`build failed code ${code}${tail ? `: ${tail}` : ""}`), { code, stdout, stderr }));
+    });
+  });
+}
+
+function stopHeightmapBuild() {
+  if (!heightmapProcess) return false;
+  const pid = heightmapProcess.pid;
+  try { process.kill(-pid, "SIGTERM"); } catch { /* already gone */ }
+  // numpy/scipy C calls can ignore SIGTERM for a while, so force-kill the group shortly after.
+  setTimeout(() => { try { process.kill(-pid, "SIGKILL"); } catch { /* gone */ } }, 1500);
+  return true;
+}
+
+ipcMain.handle("heightmap:build", async (event, options = {}) => {
+  const { scriptDir, command, out } = buildHeightMapCommand(options);
+  const result = await runHeightmapBuild(command, scriptDir);
+  const outDir = path.isAbsolute(out) ? out : path.join(scriptDir, out);
+  const cloudPath = path.join(outDir, "cloud_view3d.json");
+  const gridPath = path.join(outDir, "height_view3d.json");
+  const resultPath = fs.existsSync(cloudPath) ? cloudPath : gridPath;
+  return { ...result, command, outDir, cloudPath, gridPath, resultPath };
+});
+
+ipcMain.handle("heightmap:cancel", async () => {
+  return { cancelled: stopHeightmapBuild() };
+});
+
+// Build the Nav2 global costmap overlay (3d_map/nav2_costmap.py)
+ipcMain.handle("costmap:build", async (event, options = {}) => {
+  const scriptDir = options.scriptDir || path.join(__dirname, "..", "3d_map");
+  if (!options.map) throw new Error("map is required");
+  const overlay = path.join(scriptDir, "out_costmap_overlay.png");
+  let nav2 = options.nav2Params;
+  if (!nav2) {
+    const def = path.join(scriptDir, "..", "src", "semantic_nav2_package", "pkg",
+      "semantic_nav2", "config", "nav2_params.yaml");
+    if (fs.existsSync(def)) nav2 = def;
+  }
+  if (!nav2) throw new Error("nav2_params.yaml not found (pass nav2Params)");
+  const parts = [shellQuote(options.python || "python3"), "nav2_costmap.py",
+    "--map", shellQuote(String(options.map)), "--nav2-params", shellQuote(String(nav2)),
+    "--ns", String(options.ns || "global_costmap"), "--overlay", shellQuote(overlay)];
+  const result = await runShellCommand(parts.join(" "), { cwd: scriptDir });
+  const data = fs.readFileSync(overlay);
+  return { ...result, overlayPath: overlay, nav2Params: nav2,
+    overlayBase64: Buffer.from(data).toString("base64") };
+});
+
+// Recommend observation goals for a carrier (3d_map/observe_carrier.py)
+ipcMain.handle("observe:goals", async (event, options = {}) => {
+  const scriptDir = options.scriptDir || path.join(__dirname, "..", "3d_map");
+  const py = options.python || "python3";
+  if (!options.semantic || !options.map || options.carrier == null) {
+    throw new Error("semantic, map and carrier are required");
+  }
+  const outPath = path.join(scriptDir, "out_ui_goals.json");
+  const parts = [shellQuote(py), "observe_carrier.py",
+    "--semantic", shellQuote(String(options.semantic)),
+    "--map", shellQuote(String(options.map)),
+    "--carrier", shellQuote(String(options.carrier)),
+    "--top", String(options.top || 4),
+    "--out", shellQuote(outPath)];
+  let nav2 = options.nav2Params;
+  if (!nav2) {
+    const def = path.join(scriptDir, "..", "src", "semantic_nav2_package", "pkg",
+      "semantic_nav2", "config", "nav2_params.yaml");
+    if (fs.existsSync(def)) nav2 = def;
+  }
+  if (nav2) parts.push("--nav2-params", shellQuote(String(nav2)));
+  if (options.cameraInfoBag) parts.push("--camera-info-bag", shellQuote(String(options.cameraInfoBag)));
+  if (options.viewFace) parts.push("--view-face", String(options.viewFace));
+  if (options.frontEdge != null) parts.push("--front-edge", String(options.frontEdge));
+  if (options.frontYaw != null) parts.push("--front-yaw", String(options.frontYaw));
+  if (options.zStart != null) parts.push("--z-start", String(options.zStart));
+  if (options.zEnd != null) parts.push("--z-end", String(options.zEnd));
+  if (options.robotRadius != null) parts.push("--robot-radius", String(options.robotRadius));
+  const result = await runShellCommand(parts.join(" "), { cwd: scriptDir });
+  const data = JSON.parse(fs.readFileSync(outPath, "utf-8"));
+  const goals = Array.isArray(data) ? data : (data.goals || [data]);
+  return { ...result, goals, nav2Params: nav2 || null };
+});
+
 ipcMain.handle("rosbag:stop", async () => {
   const stopped = stopBagProcess();
   return { running: false, stopped };

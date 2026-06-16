@@ -86,6 +86,36 @@ python build_height_map.py --bag BAG --map MAP.yaml --urdf rby1.urdf \
 풋프린트 안에 있으므로 자기-점만 영구 제거되고, 그 자리의 바닥/천장은 로봇이 다른 위치에
 있을 때 본 스캔으로 채워집니다(누적이라 구멍 안 남음). rby1 실측: **자기-점의 ~44% 제거**.
 
+## 카메라 컬러 입히기 (color fusion)
+
+lidar 점에 카메라 색을 입히고(투영), 선택적으로 RGB-D 클라우드까지 융합합니다.
+**`/tf_static` + `color/camera_info`가 있는 bag에서만 동작합니다.**
+
+```bash
+python build_height_map.py --bag NEW_BAG --map MAP.yaml --urdf rby1.urdf \
+  --color-image /camera/camera_head/color/image_raw/compressed \
+  --color-info  /camera/camera_head/color/camera_info \
+  --extra-cloud /camera/camera_head/depth/color/points \
+  --footprint "[[0.097,-0.30],[0.097,0.30],[-0.260,0.30],[-0.563,0.15],[-0.563,-0.15],[-0.260,-0.30]]" \
+  --range-max 40 --voxel 0      # voxel 0 = 다운샘플 없이 원본 밀도
+```
+
+| 옵션 | 설명 |
+|---|---|
+| `--color-image` | lidar에 색 입힐 컬러 이미지 토픽 (Compressed/Image) |
+| `--color-info` | 그 카메라의 `CameraInfo`(내부파라미터 K) — **필수** |
+| `--color-frame` | 카메라 optical 프레임 (생략 시 camera_info/이미지 헤더에서 자동) |
+| `--extra-cloud` | 추가로 융합할 PointCloud2 토픽(반복 가능), 예: `depth/color/points` |
+
+동작:
+- **lidar = 기하**, 각 스캔을 카메라 optical 프레임으로 TF 변환 → K로 투영 → 픽셀 RGB 입힘
+- **`--extra-cloud`(depth/color/points)** = 이미 색칠된 RGB-D 점을 그대로 융합 (ICP 보정도 시간 매칭으로 동일 적용)
+- **겹침**: 2.5D 셀당 **가장 높은 점의 색** 하나로 표현 → 카메라 색 있으면 그 색, 없으면 높이 컬러(turbo)
+- 출력: 색이 있으면 `cloud_map_rgb.pcd`, 컬러 `elevation_color.png`, 컬러 `height_view3d.json`
+
+한계: optical 프레임/K가 정확해야 정합이 맞음(→ `/tf_static`·`camera_info` 녹화 필수). 가림(occlusion)
+미처리 — 카메라 시야의 앞 표면 색이 뒤 점에 묻을 수 있음. depth/color/points는 무거우니 짧게 녹화.
+
 > **ICP vs 동적 제거 (중요):** `--icp`는 *정합*만 합니다 — 움직이는 사람은 **안 지웁니다**(오히려 정합을 방해할 수 있어 max-dist로 outlier 배제). 따라다니는 사람을 솎으려면 `--min-hits`를 쓰세요. 다만 이건 무딘 도구라 멀리서 드물게 보인 정적 구조(벽 끝 등)도 같이 지워질 수 있습니다. 정밀 제거가 필요하면 `--save-raw`로 받아서 직접 후처리하세요.
 
 ## 출력 (`out/`)

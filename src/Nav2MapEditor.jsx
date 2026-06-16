@@ -104,6 +104,10 @@ function createRobotBackendAPI(baseUrl) {
     rosbagRecordStart: (options) => post("/api/rosbag/record/start", options),
     rosbagRecordStop: () => post("/api/rosbag/record/stop"),
     rosbagRecordStatus: () => get("/api/rosbag/record/status"),
+    heightmapBuild: (options) => post("/api/heightmap/build", options),
+    heightmapCancel: () => post("/api/heightmap/cancel"),
+    observeGoals: (options) => post("/api/observe/goals", options),
+    costmapBuild: (options) => post("/api/costmap/build", options),
   };
 }
 
@@ -171,7 +175,7 @@ const POLY_SNAP_RING_RADIUS = 4.5;
 const START_TASKS = ["HRI","PnP","GPSR","DL","Restaurant"];
 const DEFAULT_START_TASK = START_TASKS[0];
 const QUICK_MAP_DIR = "/home/nvidia/rby1_nav2/src/rby1_nav2/maps";
-const QUICK_MAP_NAMES = {1:"map_first",2:"map_second"};
+const QUICK_MAP_NAMES = {1:"map_first",2:"map_second",3:"map_third"};
 const DEFAULT_WORKSPACE_ROOT = "/home/nvidia/rby1_nav2";
 const DEFAULT_MAP_SEARCH_DIR = "/home/nvidia/rby1_nav2/src/rby1_nav2/maps";
 const DEFAULT_BAG_RECORD_DIR = "/home/nvidia/rby1_nav2/src/rby1_nav2/bag";
@@ -680,6 +684,7 @@ const EDIT_TOOLS=[
   {id:"line",icon:"╱",label:"선",key:"L"},
   {id:"rect",icon:"▭",label:"사각형",key:"R"},
   {id:"circle",icon:"◯",label:"원",key:"C"},
+  {id:"polyfill",icon:"⬡",label:"다각형",key:"P"},
   {id:"fill",icon:"▓",label:"채우기",key:"F"},
 ];
 const SEM_TOOL_GROUPS=[
@@ -705,6 +710,7 @@ const SEM_TOOL_GROUPS=[
     {id:"semPolyEmptySeat",icon:"⬡", label:"다각형",  key:"Q"},
   ]},
 ];
+const KEEPOUT_COLOR="#ff2a2a";   // keepout raster paint colour
 const SEM_EXTRA_TOOLS=[
   {id:"startPose", icon:"⌂", label:"시작점",    key:"S", color:"#00e676"},
   {id:"waypoint",  icon:"◎", label:"웨이포인트", key:"W", color:"#ffaa00"},
@@ -2387,12 +2393,35 @@ export default function Nav2MapEditor() {
   const [rooms,       setRooms]       = useState([]);
   const [carriers,    setCarriers]    = useState([]);
   const [objects,     setObjects]     = useState([]);
+  // Keepout (no-entry) is a SEPARATE raster layer painted with the normal draw tools —
+  // a dedicated canvas (red where keepout), never touching the base map PGM.
+  const keepoutCanvasRef = useRef(null);
+  const [keepoutMode, setKeepoutMode] = useState(false);   // draw tools paint keepout instead of base map
+  const [showKeepout, setShowKeepout] = useState(true);    // show/hide the red keepout overlay
+  const [keepoutTick, setKeepoutTick] = useState(0);       // bump to refresh keepout-derived UI (count/empty)
+  const koHistRef = useRef([]);                            // keepout undo history (ImageData snapshots)
+  const koIdxRef = useRef(-1);
+  const lastEditedRef = useRef("base");                    // "base" | "keepout" → routes Ctrl+Z
+  const koPolyRef = useRef([]);                            // in-progress polygon vertices (ref → no lag)
+  const koPolySnapRef = useRef(null);                      // canvas snapshot for polygon preview restore
   const [emptySeats,  setEmptySeats]  = useState([]);
   const [goals,       setGoals]       = useState([]);
   const [goalList,    setGoalList]    = useState([]);
   const [selSemId,    setSelSemId]    = useState(null);
   const [semDlg,      setSemDlg]      = useState(null);
   const [goalDlg,     setGoalDlg]     = useState(null); // {x, y, roomId}
+  const [recoGoals,   setRecoGoals]   = useState([]);   // recommended observation goals (px + world)
+  const [recoBusy,    setRecoBusy]    = useState(false);
+  const recoGoalsRef = useRef([]);
+  useEffect(()=>{recoGoalsRef.current=recoGoals;},[recoGoals]);
+  const [showCostmap, setShowCostmap] = useState(false);      // overlay the Nav2 global costmap
+  const [costmapBusy, setCostmapBusy]  = useState(false);
+  const [nav2ParamsPath, setNav2ParamsPath] = useState("");   // chosen nav2_params.yaml (else repo default)
+  const costmapImgRef = useRef(null);                          // loaded costmap overlay Image
+  const [frontEdgePick, setFrontEdgePick] = useState(false);  // clicking sets the carrier front edge
+  const [zPickTarget, setZPickTarget] = useState(null);       // "z_start"|"z_end" being read from 3D lidar
+  const frontEdgePickRef = useRef(false);
+  useEffect(()=>{frontEdgePickRef.current=frontEdgePick;},[frontEdgePick]);
   const [startDlg,    setStartDlg]    = useState(null); // {pose, defaultTask, defaultId}
   const [startDraft,  setStartDraft]  = useState(null);
   const [showSemPanel,setShowSemPanel]= useState(false);
@@ -2441,6 +2470,8 @@ export default function Nav2MapEditor() {
   const [show3DView, setShow3DView] = useState(false);
   const [view3DMode, setView3DMode] = useState("free");
   const [view3DWidth, setView3DWidth] = useState(460);
+  const [view3DBuilding, setView3DBuilding] = useState(false);
+  const [view3DCloud, setView3DCloud] = useState(null);   // parsed cloud_view3d.json for the 3D view
   const view3DResizing = useRef(false);
   const [bagPath, setBagPath] = useState("");
   const [bagRunning, setBagRunning] = useState(false);
@@ -2613,6 +2644,7 @@ export default function Nav2MapEditor() {
     histRef.current=histRef.current.slice(0,histIdxRef.current+1);
     histRef.current.push(snap);if(histRef.current.length>40)histRef.current.shift();
     histIdxRef.current=histRef.current.length-1;
+    lastEditedRef.current="base";
   },[]);
   const restoreSnap=useCallback((snap)=>{
     canvasRef.current?.getContext("2d").putImageData(snap.img,0,0);
@@ -2872,6 +2904,13 @@ export default function Nav2MapEditor() {
     const hov=hoverSemRef.current;
     const alpha=semOpacity;
 
+    // ── Nav2 global costmap overlay (pixel-aligned to the map) ──
+    if(showCostmap&&costmapImgRef.current){
+      ctx.save();ctx.globalAlpha=0.55;
+      try{ctx.drawImage(costmapImgRef.current,0,0,c.width,c.height);}catch{}
+      ctx.restore();
+    }
+
     // ── Draw completed maps (behind everything) ──
     maps.forEach(m=>{
       const mt=typeOptions.maps.find(t=>t.id===m.type)||typeOptions.maps[typeOptions.maps.length-1];
@@ -2891,6 +2930,21 @@ export default function Nav2MapEditor() {
       const ct=typeOptions.carriers.find(t=>t.id===carrier.type)||typeOptions.carriers[typeOptions.carriers.length-1];
       const isSel=selSemId===carrier.id;
       drawPolygonItem(ctx, carrier, ct, isSel, alpha, isSel||hov===carrier.id);
+      // front-face edge (annotation): thick magenta edge + outward normal arrow
+      if(carrier.front_edge!=null){
+        const poly=shapeToPoly(carrier);
+        if(poly&&poly.length>=2){
+          const a=poly[carrier.front_edge%poly.length],b=poly[(carrier.front_edge+1)%poly.length];
+          const cen=poly.reduce((s,p)=>({x:s.x+p.x/poly.length,y:s.y+p.y/poly.length}),{x:0,y:0});
+          const mid={x:(a.x+b.x)/2,y:(a.y+b.y)/2};
+          let nx=(b.y-a.y),ny=-(b.x-a.x);const nl=Math.hypot(nx,ny)||1;nx/=nl;ny/=nl;
+          if((mid.x-cen.x)*nx+(mid.y-cen.y)*ny<0){nx=-nx;ny=-ny;}
+          ctx.save();ctx.strokeStyle="#ff2aa8";ctx.lineWidth=isSel?2.4:1.6;ctx.setLineDash([]);
+          ctx.beginPath();ctx.moveTo(a.x+.5,a.y+.5);ctx.lineTo(b.x+.5,b.y+.5);ctx.stroke();
+          ctx.beginPath();ctx.moveTo(mid.x+.5,mid.y+.5);ctx.lineTo(mid.x+nx*10+.5,mid.y+ny*10+.5);ctx.stroke();
+          ctx.restore();
+        }
+      }
     });
 
     // ── Draw completed empty seats ──
@@ -3038,6 +3092,19 @@ export default function Nav2MapEditor() {
       ctx.restore();
     });
 
+    // ── Draw recommended observation goals (candidates to adopt) ──
+    recoGoals.forEach((rg,i)=>{
+      const col=i===0?"#ff3b8d":"#ffa64d";
+      ctx.save();
+      ctx.beginPath();ctx.arc(rg.x+.5,rg.y+.5,i===0?6:4.5,0,Math.PI*2);
+      ctx.fillStyle=hexRgba(col,0.92);ctx.fill();ctx.strokeStyle="#fff";ctx.lineWidth=0.8;ctx.stroke();
+      const al=10;ctx.strokeStyle=col;ctx.lineWidth=1.6;ctx.beginPath();
+      ctx.moveTo(rg.x+.5,rg.y+.5);ctx.lineTo(rg.x+.5+Math.cos(rg.theta)*al,rg.y+.5-Math.sin(rg.theta)*al);ctx.stroke();
+      ctx.font="bold 6px monospace";ctx.fillStyle=col;ctx.textAlign="left";ctx.textBaseline="bottom";
+      ctx.fillText(`${i}`,rg.x+7,rg.y-4);
+      ctx.restore();
+    });
+
     // ── Draw ROS2 overlay (lidar, path, robot pose) ──
     drawRos2(ctx);
 
@@ -3105,7 +3172,7 @@ export default function Nav2MapEditor() {
         ctx.restore();
       }
     }
-  },[maps,rooms,carriers,objects,emptySeats,startPoses,startDraft,selectedStartTask,waypoints,goals,selWpIdx,selSemId,semOpacity,polySnap,tool,drawRos2,typeOptions]);
+  },[maps,rooms,carriers,objects,emptySeats,startPoses,startDraft,selectedStartTask,waypoints,goals,recoGoals,showCostmap,selWpIdx,selSemId,semOpacity,polySnap,tool,drawRos2,typeOptions]);
 
   useEffect(()=>{drawOverlayRef.current=drawOverlay;},[drawOverlay]);
   useEffect(()=>{drawOverlay();},[drawOverlay]);
@@ -3120,6 +3187,132 @@ export default function Nav2MapEditor() {
     else if(t==="circle"){ctx.beginPath();ctx.arc(x0+.5,y0+.5,Math.sqrt((x1-x0)**2+(y1-y0)**2),0,Math.PI*2);ctx.stroke();}
   };
 
+  // ── Keepout raster layer: separate canvas painted with the same draw tools ──
+  useEffect(()=>{                                   // size to map; new map/load clears it
+    const k=keepoutCanvasRef.current;if(!k)return;
+    const {w,h}=canvasSize;if(!w||!h)return;
+    k.width=w;k.height=h;                            // assigning size also clears
+    koHistRef.current=[k.getContext("2d").getImageData(0,0,w,h)];koIdxRef.current=0; // seed empty undo state
+    setKeepoutTick(t=>t+1);
+  },[canvasSize]);
+  const koDot=(ctx,x,y,sz,erase)=>{const h=Math.floor(sz/2);ctx.save();if(erase){ctx.globalCompositeOperation="destination-out";ctx.fillStyle="#000";}else ctx.fillStyle=KEEPOUT_COLOR;ctx.fillRect(x-h,y-h,sz,sz);ctx.restore();};
+  const koSeg=(ctx,x0,y0,x1,y1,sz,erase)=>{const dx=x1-x0,dy=y1-y0,steps=Math.max(Math.ceil(Math.hypot(dx,dy)),1);for(let i=0;i<=steps;i++)koDot(ctx,Math.round(x0+dx*i/steps),Math.round(y0+dy*i/steps),sz,erase);};
+  const koShape=(ctx,x0,y0,x1,y1,shiftKey,t)=>{ctx.save();ctx.fillStyle=KEEPOUT_COLOR;ctx.strokeStyle=KEEPOUT_COLOR;ctx.lineWidth=brushSz;ctx.lineCap="round";ctx.lineJoin="round";ctx.setLineDash([]);
+    if(t==="line"){ctx.beginPath();ctx.moveTo(x0+.5,y0+.5);ctx.lineTo(x1+.5,y1+.5);ctx.stroke();}
+    else if(t==="rect"){let rw=x1-x0,rh=y1-y0;if(shiftKey){const s=Math.min(Math.abs(rw),Math.abs(rh));rw=Math.sign(rw)*s;rh=Math.sign(rh)*s;}ctx.fillRect(x0,y0,rw,rh);}
+    else if(t==="circle"){ctx.beginPath();ctx.arc(x0+.5,y0+.5,Math.sqrt((x1-x0)**2+(y1-y0)**2),0,Math.PI*2);ctx.fill();}
+    ctx.restore();};
+  const keepoutHasPixels=useCallback(()=>{
+    const k=keepoutCanvasRef.current;if(!k||!k.width)return false;
+    const d=k.getContext("2d").getImageData(0,0,k.width,k.height).data;
+    for(let i=3;i<d.length;i+=4)if(d[i]>10)return true;
+    return false;
+  },[keepoutTick]);
+  // ── Keepout undo/redo (own history, separate from the base-map undo) ──
+  const koSaveSnap=useCallback(()=>{
+    const k=keepoutCanvasRef.current;if(!k||!k.width)return;
+    const img=k.getContext("2d").getImageData(0,0,k.width,k.height);
+    koHistRef.current=koHistRef.current.slice(0,koIdxRef.current+1);
+    koHistRef.current.push(img);if(koHistRef.current.length>30)koHistRef.current.shift();
+    koIdxRef.current=koHistRef.current.length-1;
+    lastEditedRef.current="keepout";
+    setKeepoutTick(t=>t+1);
+  },[]);
+  const koRestore=(img)=>{const k=keepoutCanvasRef.current;if(!k||!img)return;if(k.width!==img.width||k.height!==img.height){k.width=img.width;k.height=img.height;}k.getContext("2d").putImageData(img,0,0);setKeepoutTick(t=>t+1);};
+  const koUndo=useCallback(()=>{if(koIdxRef.current<=0){lastEditedRef.current="base";return;}koIdxRef.current--;koRestore(koHistRef.current[koIdxRef.current]);if(koIdxRef.current<=0)lastEditedRef.current="base";setStatus("↩ keepout 되돌리기");},[]);
+  const koRedo=useCallback(()=>{if(koIdxRef.current>=koHistRef.current.length-1)return;koIdxRef.current++;koRestore(koHistRef.current[koIdxRef.current]);setStatus("↪ keepout 다시 실행");},[]);
+  const clearKeepout=useCallback(()=>{
+    const k=keepoutCanvasRef.current;if(k)k.getContext("2d").clearRect(0,0,k.width,k.height);
+    koSaveSnap();setStatus("⛔ 진입금지 레이어 비움");
+  },[koSaveSnap]);
+  const keepoutPainted=useMemo(()=>keepoutHasPixels(),[keepoutHasPixels]);
+  // Fill a keepout zone from a world-coords polygon (e.g. drawn in the 3D view over lidar obstacles).
+  const keepoutFromWorldPolygon=useCallback((worldPts)=>{
+    if(!worldPts||worldPts.length<3)return;
+    const k=keepoutCanvasRef.current;if(!k){setStatus("⚠ 맵을 먼저 로드하세요");return;}
+    const pts=worldPts.map(p=>worldToPixel(p.x,p.y,meta.origin,meta.resolution,canvasSize.h));
+    const ctx=k.getContext("2d");
+    ctx.save();ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);
+    pts.slice(1).forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();
+    ctx.fillStyle=KEEPOUT_COLOR;ctx.fill();ctx.restore();
+    koSaveSnap();setShowKeepout(true);
+    setStatus(`⛔ 3D 영역 → 진입금지 추가 (${pts.length}각형)`);
+  },[meta,canvasSize,koSaveSnap]);
+
+  // Fill a keepout zone from a carrier's footprint directly (no re-drawing).
+  const carrierToKeepout=useCallback((carrier)=>{
+    const k=keepoutCanvasRef.current;if(!k){setStatus("⚠ 맵을 먼저 로드하세요");return;}
+    const poly=shapeToPoly(carrier);
+    if(!poly||poly.length<3){setStatus("⚠ 캐리어 폴리곤이 없습니다");return;}
+    const ctx=k.getContext("2d");
+    ctx.save();ctx.beginPath();ctx.moveTo(poly[0].x,poly[0].y);
+    poly.slice(1).forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();
+    ctx.fillStyle=KEEPOUT_COLOR;ctx.fill();ctx.restore();
+    koSaveSnap();setShowKeepout(true);
+    setStatus(`⛔ ${carrier.label||carrier.id} → 진입금지`);
+  },[koSaveSnap]);
+
+  // Create a semantic polygon (carrier/room/object) from a world-coords polygon drawn in 3D.
+  const semanticFromWorldPolygon=useCallback((worldPts,mode)=>{
+    if(!worldPts||worldPts.length<3)return;
+    if(!mapLoaded){setStatus("⚠ 맵을 먼저 로드하세요");return;}
+    const poly=worldPts.map(p=>{const px=worldToPixel(p.x,p.y,meta.origin,meta.resolution,canvasSize.h);return{x:px.x,y:px.y};});
+    setSemDlg({mode,poly});
+    setActiveTab("semantic");
+    setStatus(`3D 영역 → ${mode} 지정 (이름 입력)`);
+  },[mapLoaded,meta,canvasSize]);
+
+  // ── Keepout bucket fill: flood the contiguous transparent region with red ──
+  const koFloodFill=useCallback((sx,sy)=>{
+    const k=keepoutCanvasRef.current;if(!k)return;const ctx=k.getContext("2d");const w=k.width,h=k.height;
+    if(sx<0||sy<0||sx>=w||sy>=h)return;
+    const id=ctx.getImageData(0,0,w,h);const d=id.data;const at=(x,y)=>(y*w+x)*4;
+    if(d[at(sx,sy)+3]>10)return;                     // already keepout → nothing to fill
+    const stack=[[sx,sy]];
+    while(stack.length){const [x,y]=stack.pop();
+      if(x<0||y<0||x>=w||y>=h)continue;const p=at(x,y);if(d[p+3]>10)continue;
+      d[p]=255;d[p+1]=42;d[p+2]=42;d[p+3]=255;
+      stack.push([x+1,y],[x-1,y],[x,y+1],[x,y-1]);
+    }
+    ctx.putImageData(id,0,0);koSaveSnap();
+  },[koSaveSnap]);
+
+  // ── Polygon-fill (ref-based, no per-vertex React state → no lag). Works on the
+  // active layer: keepout canvas when keepoutMode, else the base map canvas. ──
+  const polyFillActiveCanvas=()=>keepoutMode?keepoutCanvasRef.current:canvasRef.current;
+  const drawPolyFillPreview=useCallback((cursor)=>{
+    const verts=koPolyRef.current,snap=koPolySnapRef.current,c=polyFillActiveCanvas();
+    if(!c||!snap)return;const ctx=c.getContext("2d");ctx.putImageData(snap,0,0);
+    if(!verts.length)return;
+    const col=keepoutMode?KEEPOUT_COLOR:`rgb(${drawColor},${drawColor},${drawColor})`;
+    ctx.save();ctx.strokeStyle=col;ctx.lineWidth=Math.max(1,brushSz/3);ctx.setLineDash([4,3]);ctx.lineJoin="round";
+    ctx.beginPath();ctx.moveTo(verts[0].x+.5,verts[0].y+.5);
+    verts.slice(1).forEach(p=>ctx.lineTo(p.x+.5,p.y+.5));
+    if(cursor)ctx.lineTo(cursor.x+.5,cursor.y+.5);
+    ctx.stroke();ctx.setLineDash([]);
+    verts.forEach(p=>{ctx.beginPath();ctx.arc(p.x+.5,p.y+.5,2.5,0,Math.PI*2);ctx.fillStyle=col;ctx.fill();});
+    ctx.restore();
+  },[keepoutMode,drawColor,brushSz]);
+  const commitPolyFill=useCallback(()=>{
+    const verts=koPolyRef.current,snap=koPolySnapRef.current,c=polyFillActiveCanvas();
+    koPolyRef.current=[];koPolySnapRef.current=null;
+    if(!c)return;const ctx=c.getContext("2d");
+    if(snap)ctx.putImageData(snap,0,0);              // remove preview outline
+    if(verts.length<3)return;
+    ctx.save();ctx.beginPath();ctx.moveTo(verts[0].x,verts[0].y);
+    verts.slice(1).forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();
+    ctx.fillStyle=keepoutMode?KEEPOUT_COLOR:`rgb(${drawColor},${drawColor},${drawColor})`;ctx.fill();
+    ctx.restore();
+    if(keepoutMode)koSaveSnap();else saveSnap();
+    setStatus("⬡ 다각형 채움");
+  },[keepoutMode,drawColor,koSaveSnap,saveSnap]);
+  const cancelPolyFill=useCallback(()=>{
+    const snap=koPolySnapRef.current,c=polyFillActiveCanvas();
+    if(c&&snap)c.getContext("2d").putImageData(snap,0,0);
+    koPolyRef.current=[];koPolySnapRef.current=null;
+  },[keepoutMode]);
+  useEffect(()=>{if(tool!=="polyfill"&&koPolyRef.current.length>0)cancelPolyFill();},[tool,cancelPolyFill]);
+
   // ── Confirm polygon finish ──
   const finishPolygon=useCallback((verts)=>{
     if(verts.length<3)return;
@@ -3127,6 +3320,72 @@ export default function Nav2MapEditor() {
     setSemDlg({mode, poly:verts});
     setPolyVerts([]);setPolySnap(false);
   },[tool]);
+
+  const pickNav2Params=useCallback(async()=>{
+    const picked=await pickHostPath({title:"nav2_params.yaml 선택",defaultPath:nav2ParamsPath||DEFAULT_MAP_SEARCH_DIR,
+      filters:[{name:"Nav2 params",extensions:["yaml","yml"]}]});
+    const p=Array.isArray(picked)?picked[0]:picked;
+    if(p){setNav2ParamsPath(p);setStatus(`⚙ nav2_params: ${basenameFromPath(p)}`);}
+    return p||null;
+  },[nav2ParamsPath,pickHostPath]);
+
+  const buildCostmap=useCallback(async()=>{
+    if(!hostAPI?.costmapBuild){setStatus("⚠ 코스트맵은 Electron/robot backend에서만 가능합니다");return;}
+    if(showCostmap){setShowCostmap(false);return;}   // toggle off
+    const mapPath=workspaceSync.mapPath;
+    if(!mapPath){setStatus("⚠ 맵을 먼저 저장/로드하세요 (map .yaml 경로 필요)");return;}
+    setCostmapBusy(true);setStatus("🟥 Nav2 글로벌 코스트맵 생성 중…");
+    try{
+      const res=await hostAPI.costmapBuild({map:mapPath,nav2Params:nav2ParamsPath||undefined});
+      const b64=res?.overlayBase64;
+      if(!b64)throw new Error("코스트맵 이미지 없음");
+      const img=new Image();
+      img.onload=()=>{costmapImgRef.current=img;setShowCostmap(true);drawOverlayRef.current?.();};
+      img.onerror=()=>setStatus("⚠ 코스트맵 이미지 로드 실패");
+      img.src=`data:image/png;base64,${b64}`;
+      setStatus(`🟥 코스트맵 표시 (inflation 반영)`);
+    }catch(e){
+      setStatus(`⚠ 코스트맵 실패: ${e.message}`);
+    }finally{
+      setCostmapBusy(false);
+    }
+  },[showCostmap,workspaceSync.mapPath,nav2ParamsPath]);
+
+  const adoptRecoGoal=useCallback((reco)=>{
+    const id=guid();
+    setGoals(p=>[...p,{id,x:Math.round(reco.x),y:Math.round(reco.y),theta:reco.theta,
+      label:id,room_id:reco.room_id,target_id:reco.target_id}]);
+    setRecoGoals([]);
+    setStatus(`🎯 관측 골 채택: ${id} → ${reco.target_id}`);
+  },[]);
+
+  const updateCarrier=useCallback((id,patch)=>{
+    setCarriers(p=>p.map(c=>c.id===id?{...c,...patch}:c));
+  },[]);
+  const onPickHeight=useCallback((z)=>{
+    setZPickTarget(t=>{
+      if(!t)return null;
+      const sc=carriers.find(c=>c.id===selSemId);
+      if(sc){updateCarrier(sc.id,{[t]:+Number(z).toFixed(3)});setStatus(`📏 ${t} = ${(+z).toFixed(2)} m (라이다)`);}
+      return null;
+    });
+  },[carriers,selSemId,updateCarrier]);
+  const onPickHeightRange=useCallback((zmin,zmax)=>{
+    const sc=carriers.find(c=>c.id===selSemId);
+    if(!sc){setStatus("⚠ 캐리어를 먼저 선택하세요");return;}
+    if((sc.view_face||"front")==="top")updateCarrier(sc.id,{z_end:+Number(zmax).toFixed(3),z_start:null});
+    else updateCarrier(sc.id,{z_start:+Number(zmin).toFixed(3),z_end:+Number(zmax).toFixed(3)});
+    setZPickTarget(null);
+    setStatus(`📐 z ${(+zmin).toFixed(2)}~${(+zmax).toFixed(2)} m (라이다 영역)`);
+  },[carriers,selSemId,updateCarrier]);
+  const nearestEdgeIndex=(poly,pt)=>{
+    const segDist=(p,a,b)=>{const vx=b.x-a.x,vy=b.y-a.y,wx=p.x-a.x,wy=p.y-a.y;
+      const L=vx*vx+vy*vy;const t=L<1e-9?0:Math.max(0,Math.min(1,(wx*vx+wy*vy)/L));
+      const dx=p.x-(a.x+t*vx),dy=p.y-(a.y+t*vy);return Math.hypot(dx,dy);};
+    let bi=-1,bd=Infinity;
+    for(let i=0;i<poly.length;i++){const d=segDist(pt,poly[i],poly[(i+1)%poly.length]);if(d<bd){bd=d;bi=i;}}
+    return bi;
+  };
 
   // ── Mouse Down ──
   const onMouseDown=useCallback((e)=>{
@@ -3137,6 +3396,32 @@ export default function Nav2MapEditor() {
     if(e.button===1||(e.button===0&&e.altKey)){isPanning.current=true;panOrigin.current={...panRef.current};panStart.current={x:e.clientX,y:e.clientY};e.preventDefault();return;}
     if(e.button!==0)return;
     const pt=toXY(e);if(!pt)return;
+
+    // ── Adopt a recommended observation goal (click the candidate marker) ──
+    if(recoGoalsRef.current.length){
+      const thr=Math.max(6,12/(zoomRef.current||1));
+      let hit=null,bd=thr;
+      for(const rg of recoGoalsRef.current){
+        const d=Math.hypot(pt.x-rg.x,pt.y-rg.y);
+        if(d<bd){bd=d;hit=rg;}
+      }
+      if(hit){adoptRecoGoal(hit);return;}
+    }
+
+    // ── Pick the carrier front edge (click near an edge of the selected carrier) ──
+    if(frontEdgePickRef.current){
+      const carrier=carriers.find(c=>c.id===selSemId);
+      const poly=carrier&&shapeToPoly(carrier);
+      if(poly&&poly.length>=2){
+        const ei=nearestEdgeIndex(poly,pt);
+        updateCarrier(carrier.id,{front_edge:ei,view_face:carrier.view_face||"front"});
+        setFrontEdgePick(false);
+        setStatus(`⬡ 앞면 = 변 ${ei}`);
+      }else{
+        setStatus("⚠ 캐리어를 먼저 선택하세요");
+      }
+      return;
+    }
 
     // ── Polygon tools ──
     if(tool==="semPolyMap"||tool==="semPolyRoom"||tool==="semPolyCarrier"||tool==="semPolyObj"||tool==="semPolyEmptySeat"){
@@ -3260,20 +3545,47 @@ export default function Nav2MapEditor() {
       setStatus("SLAM 모드에서는 live map 픽셀 편집이 잠겨 있습니다. 시맨틱 도구를 사용하세요");
       return;
     }
-    if(tool==="fill"){ if(!inBounds(pt))return;const c=canvasRef.current;const ctx=c.getContext("2d");const id=ctx.getImageData(0,0,c.width,c.height);floodFill(id.data,c.width,c.height,pt.x,pt.y,drawColor);ctx.putImageData(id,0,0);saveSnap();return; }
+    // ── Polygon-fill tool (click vertices; close near first / dbl-click / Enter) ──
+    if(tool==="polyfill"){
+      const verts=koPolyRef.current;
+      if(verts.length>=3){
+        const dx=pt.x-verts[0].x,dy=pt.y-verts[0].y;
+        if(Math.sqrt(dx*dx+dy*dy)<SNAP_RADIUS){commitPolyFill();return;}
+      }
+      if(verts.length===0){const c=polyFillActiveCanvas();koPolySnapRef.current=c?.getContext("2d").getImageData(0,0,c.width,c.height)||null;}
+      koPolyRef.current=[...verts,{x:pt.x,y:pt.y}];
+      drawPolyFillPreview(pt);
+      setStatus(`⬡ 꼭짓점 ${koPolyRef.current.length}개 · 더블클릭/Enter로 채우기, 첫 점 클릭으로 닫기`);
+      return;
+    }
+    if(tool==="fill"){
+      if(keepoutMode){
+        if(!inBounds(pt))return;koFloodFill(pt.x,pt.y);setStatus("⛔ 진입금지 채우기");return;
+      }
+      if(!inBounds(pt))return;const c=canvasRef.current;const ctx=c.getContext("2d");const id=ctx.getImageData(0,0,c.width,c.height);floodFill(id.data,c.width,c.height,pt.x,pt.y,drawColor);ctx.putImageData(id,0,0);saveSnap();return;
+    }
     isDrawing.current=true;shapeStart.current=pt;lastPt.current=pt;
-    if(["line","rect","circle"].includes(tool)){const c=canvasRef.current;snapRef.current=c.getContext("2d").getImageData(0,0,c.width,c.height);}
-    if((tool==="brush"||tool==="eraser")&&inBounds(pt)){const c=canvasRef.current;paintDot(c.getContext("2d"),pt.x,pt.y,tool==="eraser"?brushSz*2:brushSz,tool==="eraser"?PX_FREE:drawColor);}
-  },[tool,drawColor,brushSz,toXY,saveSnap,finishPolygon,maps,rooms,carriers,objects,emptySeats,startPoses,selectedStartTask,waypoints,goals,mapLoaded,slamMode]);
+    const paintC=keepoutMode?keepoutCanvasRef.current:canvasRef.current;
+    if(["line","rect","circle"].includes(tool)&&paintC){snapRef.current=paintC.getContext("2d").getImageData(0,0,paintC.width,paintC.height);}
+    if((tool==="brush"||tool==="eraser")&&inBounds(pt)&&paintC){
+      const k=paintC.getContext("2d");
+      if(keepoutMode)koDot(k,pt.x,pt.y,tool==="eraser"?brushSz*2:brushSz,tool==="eraser");
+      else paintDot(k,pt.x,pt.y,tool==="eraser"?brushSz*2:brushSz,tool==="eraser"?PX_FREE:drawColor);
+    }
+  },[tool,keepoutMode,drawColor,brushSz,toXY,saveSnap,finishPolygon,koFloodFill,commitPolyFill,drawPolyFillPreview,adoptRecoGoal,updateCarrier,selSemId,maps,rooms,carriers,objects,emptySeats,startPoses,selectedStartTask,waypoints,goals,mapLoaded,slamMode]);
 
   // ── Double click → close polygon ──
   const onDblClick=useCallback((e)=>{
+    if(tool==="polyfill"){
+      if(koPolyRef.current.length>=3)commitPolyFill();
+      e.preventDefault();return;
+    }
     if(tool==="semPolyMap"||tool==="semPolyRoom"||tool==="semPolyCarrier"||tool==="semPolyObj"||tool==="semPolyEmptySeat"){
       const pverts=polyVertsRef.current;
       if(pverts.length>=3) finishPolygon([...pverts]);
       e.preventDefault();
     }
-  },[tool,finishPolygon]);
+  },[tool,finishPolygon,commitPolyFill]);
 
   // ── Mouse Move ──
   const onMouseMove=useCallback((e)=>{
@@ -3326,6 +3638,8 @@ export default function Nav2MapEditor() {
     if(["semPolyMap","semPolyRoom","semPolyCarrier","semPolyObj","semPolyEmptySeat","semRectMap","semRectRoom","semRectCarrier","semRectObj","semRectEmptySeat"].includes(tool)){
       drawOverlay();
     }
+    // Polygon-fill rubber-band preview (drawn directly on the active canvas)
+    if(tool==="polyfill"&&koPolyRef.current.length>0){drawPolyFillPreview({x:cx,y:cy});}
 
     if(!isDrawing.current||!shapeStart.current)return;
     const pt=toXY(e);if(!pt)return;
@@ -3374,18 +3688,26 @@ export default function Nav2MapEditor() {
       return;
     }
 
-    const c=canvasRef.current;if(!c)return;const ctx=c.getContext("2d");
+    const c=keepoutMode?keepoutCanvasRef.current:canvasRef.current;if(!c)return;const ctx=c.getContext("2d");
 
     if(tool==="brush"||tool==="eraser"){
       if(!inBounds(pt))return;
-      const v=tool==="eraser"?PX_FREE:drawColor,sz=tool==="eraser"?brushSz*2:brushSz;
-      if(lastPt.current)paintSeg(ctx,lastPt.current.x,lastPt.current.y,pt.x,pt.y,sz,v);else paintDot(ctx,pt.x,pt.y,sz,v);
+      const sz=tool==="eraser"?brushSz*2:brushSz;
+      if(keepoutMode){
+        const erase=tool==="eraser";
+        if(lastPt.current)koSeg(ctx,lastPt.current.x,lastPt.current.y,pt.x,pt.y,sz,erase);else koDot(ctx,pt.x,pt.y,sz,erase);
+      } else {
+        const v=tool==="eraser"?PX_FREE:drawColor;
+        if(lastPt.current)paintSeg(ctx,lastPt.current.x,lastPt.current.y,pt.x,pt.y,sz,v);else paintDot(ctx,pt.x,pt.y,sz,v);
+      }
       lastPt.current=pt;
     } else if(["line","rect","circle"].includes(tool)&&snapRef.current){
-      ctx.putImageData(snapRef.current,0,0);drawShapePreview(ctx,shapeStart.current.x,shapeStart.current.y,pt.x,pt.y,e.shiftKey,tool);
+      ctx.putImageData(snapRef.current,0,0);
+      if(keepoutMode)koShape(ctx,shapeStart.current.x,shapeStart.current.y,pt.x,pt.y,e.shiftKey,tool);
+      else drawShapePreview(ctx,shapeStart.current.x,shapeStart.current.y,pt.x,pt.y,e.shiftKey,tool);
     }
     lastPt.current=pt;
-  },[tool,drawColor,brushSz,toXY,screenToCanvas,drawOverlay,maps,rooms,carriers,objects,emptySeats,startPoses,setStartPoseForTask,goals]);
+  },[tool,keepoutMode,drawColor,brushSz,toXY,screenToCanvas,drawOverlay,drawPolyFillPreview,maps,rooms,carriers,objects,emptySeats,startPoses,setStartPoseForTask,goals]);
 
   // ── Mouse Up ──
   const onMouseUp=useCallback((e)=>{
@@ -3438,7 +3760,9 @@ export default function Nav2MapEditor() {
       return;
     }
 
-    if(["brush","eraser","line","rect","circle"].includes(tool))saveSnap();
+    if(["brush","eraser","line","rect","circle"].includes(tool)){
+      if(keepoutMode)koSaveSnap(); else saveSnap();
+    }
 
     // Semantic rect complete
     if((tool==="semRectMap"||tool==="semRectRoom"||tool==="semRectCarrier"||tool==="semRectObj"||tool==="semRectEmptySeat")&&shapeStart.current&&pt){
@@ -3450,7 +3774,7 @@ export default function Nav2MapEditor() {
       }
     }
     snapRef.current=null;shapeStart.current=null;
-  },[tool,saveSnap]);
+  },[tool,keepoutMode,saveSnap,koSaveSnap]);
 
   const onMouseLeave=useCallback(()=>{setCursor(v=>({...v,vis:false}));if(hoverSemRef.current){hoverSemRef.current=null;drawOverlay();}onMouseUp();},[onMouseUp,drawOverlay]);
 
@@ -3709,14 +4033,17 @@ export default function Nav2MapEditor() {
   useEffect(()=>{
     const onKey=(e)=>{
       if(["INPUT","TEXTAREA"].includes(e.target.tagName))return;
-      if((e.ctrlKey||e.metaKey)&&e.key==="z"){e.preventDefault();undo();return;}
-      if((e.ctrlKey||e.metaKey)&&(e.key==="y"||(e.shiftKey&&e.key==="Z"))){e.preventDefault();redo();return;}
+      const koActive=keepoutMode||lastEditedRef.current==="keepout";
+      if((e.ctrlKey||e.metaKey)&&e.key==="z"){e.preventDefault();if(koActive)koUndo();else undo();return;}
+      if((e.ctrlKey||e.metaKey)&&(e.key==="y"||(e.shiftKey&&e.key==="Z"))){e.preventDefault();if(koActive)koRedo();else redo();return;}
       if(e.key==="Escape"){
         setSelSemId(null);setSemDlg(null);setGoalDlg(null);setStartDlg(null);setStartDraft(null);
         startDraftRef.current=null;startDragRef.current=null;
+        if(koPolyRef.current.length>0){cancelPolyFill();setStatus("⎋ 다각형 취소");}
         if(polyVertsRef.current.length>0){setPolyVerts([]);setPolySnap(false);setStatus("⎋ 다각형 취소");}
         return;
       }
+      if(e.key==="Enter"&&tool==="polyfill"&&koPolyRef.current.length>=3){commitPolyFill();return;}
       if(e.key==="Enter"&&(tool==="semPolyMap"||tool==="semPolyRoom"||tool==="semPolyCarrier"||tool==="semPolyObj"||tool==="semPolyEmptySeat")){
         const pverts=polyVertsRef.current;
         if(pverts.length>=3){finishPolygon([...pverts]);}
@@ -3724,7 +4051,9 @@ export default function Nav2MapEditor() {
       }
       // Backspace: remove last polygon vertex OR delete selected item/waypoint
       if(e.key==="Backspace"){
-        if((tool==="semPolyMap"||tool==="semPolyRoom"||tool==="semPolyCarrier"||tool==="semPolyObj"||tool==="semPolyEmptySeat")&&polyVertsRef.current.length>0){
+        if(tool==="polyfill"&&koPolyRef.current.length>0){
+          koPolyRef.current=koPolyRef.current.slice(0,-1);drawPolyFillPreview(cursorCanvasRef.current);
+        } else if((tool==="semPolyMap"||tool==="semPolyRoom"||tool==="semPolyCarrier"||tool==="semPolyObj"||tool==="semPolyEmptySeat")&&polyVertsRef.current.length>0){
           setPolyVerts(p=>p.slice(0,-1));
         } else if(selSemId||selWpIdx!=null){
           e.preventDefault();
@@ -3736,7 +4065,7 @@ export default function Nav2MapEditor() {
         deleteSelected();
         return;
       }
-      const em={b:"brush",e:"eraser",l:"line",r:"rect",c:"circle",f:"fill"};
+      const em={b:"brush",e:"eraser",l:"line",r:"rect",c:"circle",p:"polyfill",f:"fill"};
       const sm={s:"startPose",w:"waypoint",q:"semPolyEmptySeat","1":"semRectRoom","2":"semPolyRoom","3":"semRectCarrier","4":"semPolyCarrier","5":"semRectObj","6":"semPolyObj","7":"semPoint","8":"semSelect","9":"semGoal","0":"semSelect"};
       // Rotation: [ ] for ±15°, Shift+[ Shift+] for ±90°
       if(e.key==="["){rotateMap(e.shiftKey?-90:-15);return;}
@@ -3753,7 +4082,7 @@ export default function Nav2MapEditor() {
       }
     };
     window.addEventListener("keydown",onKey);return()=>window.removeEventListener("keydown",onKey);
-  },[undo,redo,selSemId,selWpIdx,tool,finishPolygon,deleteSelected,rotateMap,slamMode]);
+  },[undo,redo,keepoutMode,koUndo,koRedo,commitPolyFill,cancelPolyFill,drawPolyFillPreview,selSemId,selWpIdx,tool,finishPolygon,deleteSelected,rotateMap,slamMode]);
 
   // ── File I/O (host API + browser fallback) ──
   const loadPGMData=(name, buffer)=>{
@@ -4508,6 +4837,58 @@ export default function Nav2MapEditor() {
     }
   },[bagPath,bagLoop,bagRate,bagOffset,bagDuration]);
 
+  const RBY1_FOOTPRINT="[[0.097,-0.30],[0.097,0.30],[-0.260,0.30],[-0.563,0.15],[-0.563,-0.15],[-0.260,-0.30]]";
+
+  const pickBagForBuild=useCallback(async()=>{
+    const picked=await pickHostPath({title:"3D로 만들 bag 폴더 선택",properties:["openDirectory"],defaultPath:bagPath||DEFAULT_BAG_RECORD_DIR});
+    if(picked)setBagPath(picked);
+    return picked||null;
+  },[bagPath,pickHostPath]);
+
+  const buildView3DFromBag=useCallback(async(params={})=>{
+    if(!hostAPI?.heightmapBuild){setStatus("⚠ Bag→3D는 Electron 또는 robot backend에서만 가능합니다");return;}
+    const bag=params.bag||bagPath;
+    if(!bag){setStatus("⚠ 먼저 bag 폴더를 선택하세요");return;}
+    if(params.bag&&params.bag!==bagPath)setBagPath(params.bag);
+    const p={voxel:0.02,stride:2,rangeMax:20,zMin:0,zMax:2.5,icp:true,points:300000,footprint:true,extra:"",...params};
+    const args=[
+      `--z-min ${p.zMin}`,`--z-max ${p.zMax}`,`--range-max ${p.rangeMax}`,
+      `--voxel ${p.voxel}`,`--stride ${p.stride}`,
+      p.icp?"--icp":"",
+      `--view3d-cloud ${p.points}`,
+      p.extra||"",
+    ].filter(Boolean).join(" ");
+    setView3DBuilding(true);
+    setShow3DView(true);
+    setStatus(`🛠 Bag→3D 빌드 중… (취소: 버튼 재클릭) ${basenameFromPath(bag)}`);
+    try{
+      const res=await hostAPI.heightmapBuild({
+        bag,
+        map:(params.map??workspaceSync.mapPath)||undefined,
+        urdf:"rby1.urdf",
+        footprint:p.footprint?RBY1_FOOTPRINT:undefined,
+        footprintFrame:"base_nav",
+        args,
+      });
+      const resultPath=res?.resultPath;
+      if(!resultPath){throw new Error("출력 파일 경로를 못 받음");}
+      const text=await hostAPI.readFile(resultPath,"utf-8");
+      const parsed=JSON.parse(text);
+      setView3DCloud({data:parsed,key:Date.now()});
+      setStatus(`✅ Bag→3D 완료: ${parsed.count?.toLocaleString?.()||parsed.count} 점 (${basenameFromPath(resultPath)})`);
+    }catch(e){
+      setStatus(e?.cancelled||/취소/.test(e?.message||"")?"■ Bag→3D 취소됨":`⚠ Bag→3D 실패: ${e.message}`);
+    }finally{
+      setView3DBuilding(false);
+    }
+  },[bagPath,workspaceSync.mapPath]);
+
+  const cancelView3DBuild=useCallback(async()=>{
+    if(!hostAPI?.heightmapCancel)return;
+    try{await hostAPI.heightmapCancel();setStatus("■ Bag→3D 취소 요청…");}
+    catch(e){setStatus(`⚠ 취소 실패: ${e.message}`);}
+  },[]);
+
   const stopBag=useCallback(async()=>{
     if(!hostAPI?.rosbagStop)return;
     setBagBusy(true);
@@ -4666,8 +5047,26 @@ export default function Nav2MapEditor() {
         const poly=shapeToPoly(c)||[];
         const bb=poly.length?polyBBox(poly):{x:c.x,y:c.y,x2:c.x+(c.w||0),y2:c.y+(c.h||0)};
         const z=+(Number(c.z)||0).toFixed(3);
+        const ann={};
+        if(c.view_face)ann.view_face=c.view_face;
+        if(c.z_start!=null)ann.z_start=+Number(c.z_start).toFixed(3);
+        if(c.z_end!=null)ann.z_end=+Number(c.z_end).toFixed(3);
+        // Front face: save the edge index AND its explicit world location + outward normal.
+        if(c.front_edge!=null&&poly.length>=2){
+          const n=poly.length,ei=((Math.round(c.front_edge)%n)+n)%n;
+          const aw=tw(poly[ei].x,poly[ei].y),bw=tw(poly[(ei+1)%n].x,poly[(ei+1)%n].y);
+          const cx=poly.reduce((s,p)=>s+p.x,0)/n,cy=poly.reduce((s,p)=>s+p.y,0)/n;
+          const cenW=tw(cx,cy);
+          const mx=(aw.x+bw.x)/2,my=(aw.y+bw.y)/2;
+          let nx=bw.y-aw.y,ny=-(bw.x-aw.x);const L=Math.hypot(nx,ny)||1;nx/=L;ny/=L;
+          if((mx-cenW.x)*nx+(my-cenW.y)*ny<0){nx=-nx;ny=-ny;}
+          ann.front_edge=ei;
+          ann.front_face={edge:ei,
+            p0:[+aw.x.toFixed(3),+aw.y.toFixed(3)],p1:[+bw.x.toFixed(3),+bw.y.toFixed(3)],
+            mid:[+mx.toFixed(3),+my.toFixed(3)],normal_yaw:+Math.atan2(ny,nx).toFixed(4)};
+        }
         return{id:c.id,type:c.type,label:c.label,room_id:c.roomId||null,
-          z,
+          z, ...ann,
           polygon:polyWorld(poly),bbox:bboxWorld(bb),
           _pixel:{polygon:poly}};
       }),
@@ -4708,6 +5107,42 @@ export default function Nav2MapEditor() {
     },null,2);
   },[maps,rooms,carriers,objects,emptySeats,startPoses,waypoints,goals,meta,canvasSize,toWorld,catalogRooms]);
 
+  // Recommend a few observation goals for the selected carrier (runs observe_carrier.py).
+  const recommendGoals=useCallback(async()=>{
+    if(!hostAPI?.observeGoals){setStatus("⚠ 추천 골은 Electron/robot backend에서만 가능합니다");return;}
+    const carrier=carriers.find(c=>c.id===selSemId);
+    if(!carrier){setStatus("⚠ 캐리어를 먼저 선택하세요");return;}
+    const mapPath=workspaceSync.mapPath;
+    if(!mapPath){setStatus("⚠ 맵을 먼저 저장/로드하세요 (map .yaml 경로 필요)");return;}
+    const dir=dirnameFromPath(mapPath);
+    setRecoBusy(true);setStatus(`📷 ${carrier.label||carrier.id} 관측 골 계산 중…`);
+    try{
+      const semPath=`${dir}/_ui_semantic.json`;
+      await hostAPI.writeFile(semPath,buildSemanticJSON(),"utf-8");
+      const res=await hostAPI.observeGoals({
+        semantic:semPath, map:mapPath, carrier:carrier.id, top:4,
+        nav2Params:nav2ParamsPath||undefined,
+        cameraInfoBag:bagPath||undefined,
+        viewFace:carrier.view_face||undefined,
+        frontEdge:(carrier.front_edge!=null?carrier.front_edge:undefined),
+        zStart:(carrier.z_start!=null?carrier.z_start:undefined),
+        zEnd:(carrier.z_end!=null?carrier.z_end:(carrier.height!=null?carrier.height:undefined)),
+      });
+      const goals=(res?.goals||[]).map((g,i)=>{
+        const px=worldToPixel(g.position.x,g.position.y,meta.origin,meta.resolution,canvasSize.h);
+        return{rank:g.rank??i,x:px.x,y:px.y,theta:g.theta_rad,world:g.position,
+          clearance:g.clearance,nav2_cost:g.nav2_cost,target_id:carrier.id,room_id:carrier.room_id||null};
+      });
+      if(!goals.length){setStatus("⚠ 유효한 관측 골을 못 찾음 (캐리어 주변 공간/면 확인)");}
+      else setStatus(`📷 추천 골 ${goals.length}개 — 클릭해서 채택`);
+      setRecoGoals(goals);
+    }catch(e){
+      setStatus(`⚠ 추천 골 실패: ${e.message}`);
+    }finally{
+      setRecoBusy(false);
+    }
+  },[carriers,selSemId,workspaceSync.mapPath,bagPath,nav2ParamsPath,buildSemanticJSON,meta,canvasSize]);
+
   const saveMapBundle=useCallback(async(defaultBase=meta.filename)=>{
     const c=canvasRef.current;if(!c)return null;
     const fallbackBase=cleanMapBaseName(defaultBase||meta.filename||"map")||"map";
@@ -4740,6 +5175,89 @@ export default function Nav2MapEditor() {
     }
   },[buildSemanticJSON,meta,pickHostPath,syncWorkspaceMapPath]);
 
+  // ── Keepout (no-entry) — managed as a SEPARATE file, never baked into the base PGM ──
+  // Convert the keepout raster canvas to a mask PGM: keepout(alpha>0)->0(occupied), else 255(free).
+  const keepoutMaskPGM=useCallback(()=>{
+    const k=keepoutCanvasRef.current;if(!k||!k.width)return null;
+    const w=k.width,h=k.height;
+    const d=k.getContext("2d").getImageData(0,0,w,h).data;
+    const gray=new Uint8Array(w*h);
+    for(let i=0;i<gray.length;i++)gray[i]=d[i*4+3]>10?0:255;
+    return writePGM(w,h,gray);
+  },[keepoutTick]);
+
+  const keepoutCostmapYAML=useCallback((maskYamlName)=>(
+`# Nav2 KeepoutFilter — load alongside the base map. AMCL keeps using the ORIGINAL map.
+costmap_filter_info_server:
+  ros__parameters:
+    use_sim_time: false
+    type: 0            # 0 = keepout
+    filter_info_topic: "/costmap_filter_info"
+    mask_topic: "/keepout_filter_mask"
+    base: 0.0
+    multiplier: 1.0
+keepout_filter_mask_server:
+  ros__parameters:
+    use_sim_time: false
+    frame_id: "map"
+    topic_name: "/keepout_filter_mask"
+    yaml_filename: "${maskYamlName}"
+
+# Add to global_costmap (and local if desired) plugins, e.g.:
+#   plugins: ["static_layer", "obstacle_layer", "keepout_filter", "inflation_layer"]
+#   keepout_filter:
+#     plugin: "nav2_costmap_2d::KeepoutFilter"
+#     enabled: true
+#     filter_info_topic: "/costmap_filter_info"
+`),[]);
+
+  const exportKeepout=useCallback(async(defaultBase=meta.filename)=>{
+    if(!keepoutHasPixels()){setStatus("⚠ 진입금지 영역이 없습니다 (브러시/사각형/원으로 칠하세요)");return;}
+    const pgm=keepoutMaskPGM();if(!pgm)return;
+    const base=(cleanMapBaseName(defaultBase||meta.filename||"map")||"map")+"_keepout";
+    const maskYaml=writeYAML(meta,base);            // image: <base>.pgm, same res/origin -> aligned
+    if(hasHostAPI){
+      const dirPath=await pickHostPath({dialogType:"save",defaultPath:`${DEFAULT_MAP_SEARCH_DIR}/${base}.pgm`,filters:[{name:"PGM",extensions:["pgm"]}]});
+      if(!dirPath)return;
+      const slash=dirPath.lastIndexOf("/");const dir=slash>=0?dirPath.substring(0,slash):".";
+      const bn=cleanMapBaseName(dirPath)||base;
+      await hostAPI.writeFile(dirPath.endsWith(".pgm")?dirPath:`${dir}/${bn}.pgm`, pgm, null);
+      await hostAPI.writeFile(`${dir}/${bn}.yaml`, maskYaml, "utf-8");
+      await hostAPI.writeFile(`${dir}/keepout_costmap.yaml`, keepoutCostmapYAML(`${bn}.yaml`), "utf-8");
+      setStatus(`⛔ keepout 내보내기: ${bn}.pgm · .yaml · keepout_costmap.yaml`);
+    } else {
+      const dl=(data,name,mime)=>{const b=new Blob([data],{type:mime});const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=name;a.click();};
+      dl(pgm,`${base}.pgm`,"application/octet-stream");
+      dl(maskYaml,`${base}.yaml`,"text/plain");
+      dl(keepoutCostmapYAML(`${base}.yaml`),"keepout_costmap.yaml","text/plain");
+      setStatus("⛔ keepout 내보내기 완료 (PGM+YAML+params)");
+    }
+  },[meta,keepoutHasPixels,keepoutMaskPGM,keepoutCostmapYAML,pickHostPath]);
+
+  // Load a keepout mask PGM and paint it (red) back onto the keepout canvas for re-editing.
+  const loadKeepout=useCallback(async()=>{
+    const picked=await pickHostPath({title:"keepout 마스크 PGM 열기",filters:[{name:"PGM",extensions:["pgm"]}]});
+    const path=Array.isArray(picked)?picked[0]:picked;
+    if(!path){setStatus("⚠ keepout PGM을 열 수 없습니다");return;}
+    try{
+      const raw=await hostAPI.readFile(path,null);
+      let buf;
+      if(raw instanceof ArrayBuffer)buf=raw;
+      else if(raw instanceof Uint8Array)buf=raw.buffer;
+      else if(raw&&raw.binary&&typeof raw.data==="string")buf=base64ToArrayBuffer(raw.data);
+      else if(raw&&Array.isArray(raw.data))buf=new Uint8Array(raw.data).buffer;
+      else if(typeof raw==="string")buf=base64ToArrayBuffer(raw);
+      else buf=raw?.buffer||raw;
+      const {width,height,data}=parsePGM(buf);
+      const k=keepoutCanvasRef.current;if(!k)return;
+      if(k.width!==width||k.height!==height){k.width=width;k.height=height;}
+      const ctx=k.getContext("2d");const id=ctx.createImageData(width,height);
+      for(let i=0;i<width*height;i++){const occ=data[i]<128;id.data[i*4]=255;id.data[i*4+1]=42;id.data[i*4+2]=42;id.data[i*4+3]=occ?255:0;}
+      ctx.putImageData(id,0,0);koSaveSnap();
+      setStatus(`⛔ keepout 마스크 로드: ${basenameFromPath(path)}`);
+    }catch(e){setStatus(`⚠ keepout 로드 실패: ${e.message}`);}
+  },[pickHostPath,koSaveSnap]);
+
   const saveAll=async ()=>{
     const saved=await saveMapBundle(meta.filename);
     if(saved)setStatus(`💾 저장 완료: ${saved.baseName}.pgm · .yaml · _semantic.json`);
@@ -4753,11 +5271,19 @@ export default function Nav2MapEditor() {
     const yamlPath=`${QUICK_MAP_DIR}/${baseName}.yaml`;
     const pgmPath=`${QUICK_MAP_DIR}/${baseName}.pgm`;
     const semanticPath=`${QUICK_MAP_DIR}/${baseName}_semantic.json`;
+    const koBase=`${baseName}_keepout`;
     setQuickSaveBusy(slot);
     try{
       await hostAPI.writeFile(pgmPath,canvasToPGM(c),null);
       await hostAPI.writeFile(yamlPath,writeYAML(meta,baseName),"utf-8");
       await hostAPI.writeFile(semanticPath,buildSemanticJSON(),"utf-8");
+      // Keepout saved per-slot. keepoutMaskPGM() returns an all-free mask when nothing
+      // is painted, so the slot never inherits a previous keepout — saved as "none".
+      const koPgm=keepoutMaskPGM();
+      if(koPgm){
+        await hostAPI.writeFile(`${QUICK_MAP_DIR}/${koBase}.pgm`,koPgm,null);
+        await hostAPI.writeFile(`${QUICK_MAP_DIR}/${koBase}.yaml`,writeYAML(meta,koBase),"utf-8");
+      }
       syncWorkspaceMapPath(yamlPath);
 
       let thorStatus=" · Thor 복사 생략";
@@ -4769,13 +5295,14 @@ export default function Nav2MapEditor() {
           thorStatus=` · Thor 복사 실패: ${e.message}`;
         }
       }
-      setStatus(`💾 ${slot}번맵 저장 완료: ${baseName}.yaml${thorStatus}`);
+      const koMsg=keepoutHasPixels()?" · keepout 포함":" · keepout 없음";
+      setStatus(`💾 ${slot}번맵 저장 완료: ${baseName}.yaml${koMsg}${thorStatus}`);
     }catch(e){
       setStatus(`⚠ ${slot}번맵 저장 실패: ${e.message}`);
     }finally{
       setQuickSaveBusy(null);
     }
-  },[mapLoaded,meta,buildSemanticJSON,syncWorkspaceMapPath]);
+  },[mapLoaded,meta,buildSemanticJSON,syncWorkspaceMapPath,keepoutMaskPGM,keepoutHasPixels]);
 
   const saveSlamResult=useCallback(async()=>{
     if(!slamMapStats?.width){setStatus("⚠ 저장할 SLAM live map이 없습니다");return;}
@@ -4909,6 +5436,12 @@ export default function Nav2MapEditor() {
             disabled={!mapLoaded||!hasHostAPI||!!quickSaveBusy}
             title={`${QUICK_MAP_DIR}/map_second.yaml 덮어쓰기 + map_second_semantic.json Thor 복사`}
           >{quickSaveBusy===2?"2번 저장 중":"2번맵 저장"}</button>
+          <button
+            style={{...btn(),opacity:mapLoaded&&hasHostAPI&&!quickSaveBusy?1:.4}}
+            onClick={()=>quickSaveNavMap(3)}
+            disabled={!mapLoaded||!hasHostAPI||!!quickSaveBusy}
+            title={`${QUICK_MAP_DIR}/map_third.yaml 덮어쓰기 + map_third_semantic.json Thor 복사`}
+          >{quickSaveBusy===3?"3번 저장 중":"3번맵 저장"}</button>
           <button style={{...btn(),opacity:mapLoaded?1:.4}} onClick={savePGM} disabled={!mapLoaded}>⬇ PGM</button>
           <button style={{...btn(showWorkspaceDlg),opacity:workspaceAvailable?1:.4}} onClick={()=>setShowWorkspaceDlg(v=>!v)} disabled={!workspaceAvailable}>🏗 빌드</button>
           <div style={{width:1,height:16,background:"rgba(0,212,255,0.15)"}}/>
@@ -4924,6 +5457,15 @@ export default function Nav2MapEditor() {
             <button style={btn(showRos2Panel)} onClick={()=>setShowRos2Panel(v=>!v)}>🤖 ROS2{ros2State===ROS2_STATES.CONNECTED&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
             <button style={btn(showSlamPanel||slamMode)} onClick={()=>setShowSlamPanel(v=>!v)}>🧭 SLAM{slamMode&&<span style={{marginLeft:4,width:6,height:6,borderRadius:"50%",background:"#00e676",display:"inline-block",boxShadow:"0 0 4px #00e676"}}/>}</button>
             <button style={btn(show3DView)} onClick={()=>setShow3DView(v=>!v)}>🧊 3D</button>
+            {hostAPI?.costmapBuild&&(
+              <button style={btn(showCostmap)} disabled={costmapBusy} onClick={buildCostmap}
+                title="Nav2 글로벌 코스트맵(인플레이션) 오버레이">{costmapBusy?"코스트맵…":"🟥 코스트맵"}</button>
+            )}
+            {(hostAPI?.costmapBuild||hostAPI?.observeGoals)&&(
+              <button style={btn(!!nav2ParamsPath)} onClick={pickNav2Params}
+                title={nav2ParamsPath?`nav2_params: ${nav2ParamsPath}`:"nav2_params.yaml 선택 (코스트맵/추천골). 미선택 시 리포 기본값"}>
+                ⚙{nav2ParamsPath?` ${basenameFromPath(nav2ParamsPath)}`:" 파라미터"}</button>
+            )}
             {show3DView&&(
               <div style={{display:"flex",gap:4,alignItems:"center",marginLeft:2}}>
                 {[["free","Free"],["top","Top"]].map(([id,l])=>(
@@ -5041,6 +5583,16 @@ export default function Nav2MapEditor() {
             <div style={{width:"80%",height:1,background:"rgba(0,212,255,0.1)",margin:"5px 0"}}/>
             <input type="range" min={1} max={40} value={brushSz} onChange={e=>setBrushSz(Number(e.target.value))} style={{width:56,height:70,writingMode:"vertical-lr",direction:"rtl",cursor:"pointer",accentColor:"#00d4ff"}}/>
             <span style={{fontSize:12,color:"#00d4ff",fontWeight:"bold"}}>{brushSz}</span>
+            <div style={{width:"80%",height:1,background:"rgba(255,59,48,0.18)",margin:"6px 0"}}/>
+            <button title="켜면 위 그림툴(브러시/사각형/원/선/지우개)이 진입금지 레이어를 칠합니다" onClick={()=>setKeepoutMode(v=>!v)} style={{
+              width:80,padding:"5px 0",border:"none",borderRadius:6,cursor:"pointer",fontSize:10,lineHeight:1.2,
+              background:keepoutMode?"rgba(255,42,42,0.25)":"rgba(255,255,255,0.03)",
+              boxShadow:keepoutMode?"inset 0 0 0 1.5px #ff2a2a":"none",color:keepoutMode?"#ff6b60":"#7a5a58",
+            }}>⛔ 진입금지<br/>{keepoutMode?"칠하는 중":"칠하기"}</button>
+            <button title="진입금지 레이어 표시/숨김" onClick={()=>setShowKeepout(v=>!v)} style={{width:80,padding:"3px 0",border:"none",borderRadius:5,cursor:"pointer",fontSize:9,background:"rgba(255,255,255,0.03)",color:showKeepout?"#ff8a80":"#5a8a9a"}}>{showKeepout?"◉ 표시":"○ 숨김"} {keepoutPainted?"●":""}</button>
+            <button title="keepout 마스크(PGM/YAML)+costmap params 내보내기" disabled={!keepoutPainted} onClick={()=>exportKeepout(meta.filename)} style={{width:80,padding:"3px 0",border:"none",borderRadius:5,cursor:keepoutPainted?"pointer":"default",fontSize:9,background:"rgba(255,59,48,0.13)",color:keepoutPainted?"#ff6b60":"#7a4a48"}}>⛔ 내보내기</button>
+            <button title="keepout 마스크 PGM 불러오기" onClick={loadKeepout} style={{width:80,padding:"3px 0",border:"none",borderRadius:5,cursor:"pointer",fontSize:9,background:"rgba(255,255,255,0.03)",color:"#ff8a80"}}>📂 불러오기</button>
+            {keepoutPainted&&<button title="진입금지 레이어 비우기" onClick={clearKeepout} style={{width:80,padding:"3px 0",border:"none",borderRadius:5,cursor:"pointer",fontSize:9,background:"rgba(255,255,255,0.03)",color:"#b06a66"}}>🗑 비우기</button>}
           </>}
 
           {activeTab==="semantic"&&<>
@@ -5127,6 +5679,45 @@ export default function Nav2MapEditor() {
             onDoubleClick={onDblClick}>
             <div style={{position:"absolute",inset:0,opacity:.022,backgroundImage:"linear-gradient(rgba(0,212,255,.5) 1px,transparent 1px),linear-gradient(90deg,rgba(0,212,255,.5) 1px,transparent 1px)",backgroundSize:"40px 40px",pointerEvents:"none"}}/>
 
+          {/* ── Carrier face-annotation floating panel (when a carrier is selected) ── */}
+          {(()=>{const sc=carriers.find(c=>c.id===selSemId);if(!sc||!mapLoaded)return null;
+            const vf=sc.view_face||"front";
+            const tb=(on)=>({padding:"3px 8px",border:"none",borderRadius:4,cursor:"pointer",fontSize:11,background:on?"rgba(0,212,255,0.25)":"rgba(255,255,255,0.05)",color:on?"#00d4ff":"#7aa9ba"});
+            const ni={flex:1,minWidth:0,background:"rgba(0,0,0,0.4)",color:"#9fe",border:"1px solid rgba(0,212,255,0.3)",borderRadius:3,fontSize:11,padding:"3px 5px",boxSizing:"border-box"};
+            const zRow=(key,label,ph)=>(
+              <div style={{display:"flex",gap:4,alignItems:"center",marginBottom:4}}>
+                <span style={{width:38,color:"#8eb8c8",flexShrink:0}}>{label}</span>
+                <input type="number" step="0.05" style={ni} value={sc[key]??""} placeholder={ph}
+                  onChange={e=>updateCarrier(sc.id,key==="z_end"&&vf==="top"?{z_end:e.target.value===""?null:Number(e.target.value),z_start:null}:{[key]:e.target.value===""?null:Number(e.target.value)})}/>
+                <button title="3D에서 라이다 점 클릭해 높이 읽기" style={{...tb(zPickTarget===key),padding:"3px 7px",flexShrink:0}}
+                  onClick={()=>{setShow3DView(true);setZPickTarget(t=>t===key?null:key);}}>3D</button>
+              </div>);
+            return(
+            <div style={{position:"absolute",top:10,right:10,width:210,zIndex:50,background:"rgba(6,14,28,0.96)",border:"1px solid rgba(255,42,168,0.4)",borderRadius:6,padding:10,fontFamily:"'JetBrains Mono','Fira Code',monospace",boxShadow:"0 4px 16px rgba(0,0,0,0.5)"}}
+              onMouseDown={e=>e.stopPropagation()}>
+              <div style={{color:"#ff7ad0",fontWeight:"bold",fontSize:11,marginBottom:6}}>📦 {sc.label||sc.id} · 면 지정</div>
+              <div style={{display:"flex",gap:5,marginBottom:6}}>
+                <button style={{...tb(vf==="front"),flex:1}} onClick={()=>updateCarrier(sc.id,{view_face:"front"})}>앞면</button>
+                <button style={{...tb(vf==="top"),flex:1}} onClick={()=>updateCarrier(sc.id,{view_face:"top"})}>윗면</button>
+              </div>
+              {vf==="front"?(<>
+                <button style={{...tb(frontEdgePick),width:"100%",marginBottom:6,padding:"4px 0"}} onClick={()=>setFrontEdgePick(v=>!v)}>
+                  {frontEdgePick?"변을 클릭하세요…":`⬡ 앞면 변 선택${sc.front_edge!=null?` (=${sc.front_edge})`:""}`}
+                </button>
+                {zRow("z_start","z 시작","0")}
+                {zRow("z_end","z 끝","height")}
+              </>):zRow("z_end","z 윗면","윗면 높이")}
+              {zPickTarget&&<div style={{fontSize:9,color:"#9fd6e6",marginTop:2}}>↳ 3D 뷰에서 라이다 점 클릭 ({zPickTarget})</div>}
+              <button style={{width:"100%",marginTop:8,padding:"4px 0",border:"none",borderRadius:4,cursor:"pointer",fontSize:11,background:"rgba(255,42,42,0.18)",color:"#ff6b60"}}
+                onClick={()=>carrierToKeepout(sc)}>⛔ 이 캐리어 → 진입금지</button>
+              {hostAPI?.observeGoals&&(<>
+                <button disabled={recoBusy} style={{width:"100%",marginTop:5,padding:"5px 0",border:"none",borderRadius:5,cursor:recoBusy?"default":"pointer",fontSize:11,fontWeight:"bold",background:"rgba(255,59,141,0.2)",color:"#ff7ab0"}}
+                  onClick={recommendGoals}>{recoBusy?"계산 중…":"📷 추천 골"}</button>
+                {recoGoals.length>0&&<button style={{width:"100%",marginTop:3,padding:"3px 0",border:"none",borderRadius:4,cursor:"pointer",fontSize:10,background:"rgba(255,255,255,0.05)",color:"#b06a8a"}}
+                  onClick={()=>setRecoGoals([])}>✕ 추천 {recoGoals.length}개 지우기</button>}
+              </>)}
+            </div>);})()}
+
           {!mapLoaded&&(
             <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:12,zIndex:100}}
               onMouseDown={e=>e.stopPropagation()} onClick={e=>e.stopPropagation()}>
@@ -5146,6 +5737,7 @@ export default function Nav2MapEditor() {
 
           <div style={{position:"absolute",transform:`translate(${pan.x}px,${pan.y}px) rotate(${rotation}deg) scale(${zoom})`,transformOrigin:"0 0"}}>
             <canvas ref={canvasRef} style={{display:"block",imageRendering:"pixelated",border:"1px solid rgba(0,212,255,0.2)"}}/>
+            <canvas ref={keepoutCanvasRef} style={{position:"absolute",top:0,left:0,display:showKeepout?"block":"none",pointerEvents:"none",imageRendering:"pixelated",opacity:0.5}}/>
             <canvas ref={overlayRef} style={{position:"absolute",top:0,left:0,display:"block",pointerEvents:"none"}}/>
           </div>
 
@@ -5208,6 +5800,18 @@ export default function Nav2MapEditor() {
                   fixedFrame={ros2Frames?.fixed || "map"}
                   viewMode={view3DMode}
                   onChangeViewMode={setView3DMode}
+                  externalCloud={view3DCloud}
+                  onBuildFromBag={hostAPI?.heightmapBuild?buildView3DFromBag:undefined}
+                  onCancelBuild={hostAPI?.heightmapCancel?cancelView3DBuild:undefined}
+                  onPickBag={hostAPI?.heightmapBuild?pickBagForBuild:undefined}
+                  onKeepoutFromPolygon={mapLoaded?keepoutFromWorldPolygon:undefined}
+                  onSemanticFromPolygon={mapLoaded?semanticFromWorldPolygon:undefined}
+                  zPickActive={!!zPickTarget}
+                  onPickHeight={onPickHeight}
+                  onPickHeightRange={onPickHeightRange}
+                  defaultBag={bagPath}
+                  defaultMap={workspaceSync.mapPath}
+                  building={view3DBuilding}
                 />
               </div>
             </>

@@ -48,8 +48,9 @@ class Colorizer:
         if getattr(msg, "header", None) is not None and msg.header.frame_id:
             self.optical_frame = msg.header.frame_id.lstrip("/")
 
-    def add_image(self, msg, compressed: bool) -> None:
-        stamp = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+    def add_image(self, msg, compressed: bool, stamp_ns: int | None = None) -> None:
+        stamp = stamp_ns if stamp_ns is not None else (
+            int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec))
         self._stamps.append(stamp)
         self._raws.append(bytes(msg.data))
         self._compressed.append(compressed)

@@ -40,6 +40,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // ROS2 bag playback
   rosbagPlay: (options) => ipcRenderer.invoke("rosbag:play", options),
   rosbagInfo: (bagPath) => ipcRenderer.invoke("rosbag:info", bagPath),
+
+  // Build a 3D point cloud / height map from a rosbag
+  heightmapBuild: (options) => ipcRenderer.invoke("heightmap:build", options),
+  heightmapCancel: () => ipcRenderer.invoke("heightmap:cancel"),
+  observeGoals: (options) => ipcRenderer.invoke("observe:goals", options),
+  costmapBuild: (options) => ipcRenderer.invoke("costmap:build", options),
   rosbagStop: () => ipcRenderer.invoke("rosbag:stop"),
   rosbagPause: () => ipcRenderer.invoke("rosbag:pause"),
   rosbagResume: () => ipcRenderer.invoke("rosbag:resume"),
